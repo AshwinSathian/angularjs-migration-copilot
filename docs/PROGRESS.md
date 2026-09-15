@@ -9,7 +9,7 @@ Update this file at the end of every session — rewrite the status table and "W
 | Milestone | Status | PR |
 |---|---|---|
 | M0 — Inventory scanner | done | [#1](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/1) |
-| M0.5 — Target workspace scaffold | code done, PR blocked on local git | — |
+| M0.5 — Target workspace scaffold | in review | [#3](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/3) |
 | M1 — Deterministic codemods | not started | — |
 | M2 — Verification gate | not started | — |
 | M3 — LLM fallback + scheduler | not started | — |
@@ -43,11 +43,9 @@ Full scope and definition-of-done for each milestone: `docs/milestones/`.
 - `scan-routes.ts`/`scan-watches.ts` don't resolve identifier aliasing (ADR-019) — a documented, low-prevalence gap, not a TODO.
 - The four `inventory/scan-*.ts` files still each do their own traversal of the parsed project (ADR-019) — fine at M0's scale, worth revisiting if M1's larger fixtures show it mattering.
 
-**Blocking, needs the user:** `git` doesn't run at all in this session's shell — every invocation (even `git status`) prints `You have not agreed to the Xcode license agreements. Please run 'sudo xcodebuild -license' from within a Terminal window...` and does nothing. M0.5's code is complete and verified, but it cannot be committed, pushed, or opened as a PR until that's accepted interactively (needs a real Terminal and the user's own `sudo` password — not something to attempt from here). Once resolved: `git checkout -b m0.5-scaffold`, commit `libs/migration-core/src/scaffold/`, `libs/migration-core/src/cli.ts`, `libs/migration-core/src/index.ts`, `package.json`, `package-lock.json`, `docs/decisions.md` (ADR-020, ADR-021), this file, and `PLAN-m0.5-scaffold.md`, then open the PR.
-
 ## What's next
 
-Finish M0.5: once `git` works again, open the PR described above (see "Blocking, needs the user").
+Merge [PR #3](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/3) once `secrets-scan` passes and it's reviewed, then flip M0.5 to done above.
 
 Then **M1 — Deterministic codemods** (`docs/milestones/m1-codemods.md`), consuming `scaffoldTargetWorkspace`'s output as the real compile context for `tsc --noEmit` verification per `docs/product-spec.md §6.5`.
 
@@ -56,4 +54,4 @@ Then **M1 — Deterministic codemods** (`docs/milestones/m1-codemods.md`), consu
 Append one entry per session, newest last. Keep each entry to a few lines — this is a changelog, not a transcript; `docs/decisions.md` and the milestone docs carry the detail.
 
 - **2026-09-15** — Repo created from scratch: product spec and architecture doc adversarially reviewed and rewritten for public consumption (license verification, current-defaults verification, ADR-001–009), GitHub repo pushed with branch protection and CI. M0 implemented (`libs/secrets-scan`, `libs/migration-core` ingest + inventory, CLI), then put through an 8-angle adversarial review that found and fixed real bugs before merge (ADR-010, ADR-014–019). Merged via PR #1. This file created to track progress going forward.
-- **2026-09-15** — M0.5 implemented: re-verified Nx/Angular/Node/TypeScript compatibility against the live npm registry, correcting a stale assumption that Angular 21 was current (it's 22.1.x — ADR-020). Built `libs/migration-core/src/scaffold/` (subprocess-only Angular CLI invocation, no `@angular/*` dependency added to `migration-core`), wired a `scaffold` CLI command, added `@angular/cli@22.1.8` as a root devDependency. Real, unmocked run performed: found and fixed a genuine bug where `ng new --directory` mishandles absolute paths (ADR-021), then re-ran and confirmed `ng build` exits 0 against a real generated workspace. 95/95 unit tests passing, typecheck and lint clean. PR not yet opened — this session's shell has a non-functional `git` (macOS Xcode license not accepted); see "Blocking, needs the user" above.
+- **2026-09-15** — M0.5 implemented: re-verified Nx/Angular/Node/TypeScript compatibility against the live npm registry, correcting a stale assumption that Angular 21 was current (it's 22.1.x — ADR-020). Built `libs/migration-core/src/scaffold/` (subprocess-only Angular CLI invocation, no `@angular/*` dependency added to `migration-core`), wired a `scaffold` CLI command, added `@angular/cli@22.1.8` as a root devDependency. Real, unmocked run performed: found and fixed a genuine bug where `ng new --directory` mishandles absolute paths (ADR-021), then re-ran and confirmed `ng build` exits 0 against a real generated workspace. 95/95 unit tests passing, typecheck and lint clean. Opened as [PR #3](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/3) — `git` was initially non-functional in this session's shell (macOS Xcode license not accepted); user accepted it mid-session and the branch/commit/push/PR flow completed normally after.
