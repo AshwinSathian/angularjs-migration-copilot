@@ -1,0 +1,11 @@
+title = "gitleaks config for angularjs-migration-copilot"
+
+# Extend, don't replace, gitleaks' default ruleset.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "libs/secrets-scan's own tests exercise the detector with deliberately fake, syntactically-valid secrets. Real credentials must never live in a spec file regardless of this allowlist — see CONTRIBUTING.md."
+paths = [
+  '''.*\.spec\.ts$''',
+]
