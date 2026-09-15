@@ -1,6 +1,6 @@
 # AngularJS → Angular Migration Copilot
 
-**Status: pre-build.** The pipeline described below doesn't exist yet — what's here is a fully specified plan (product spec, architecture, milestone breakdown) that the code is about to be built against. If you're reading this before M0 lands, you're reading the design, not the product. Progress lives in [docs/milestones](docs/milestones).
+**Status: early build.** Stages 0 and 1 (ingest + inventory, M0) are implemented, tested, and have been run against a real pinned fixture repo. Stages 1.5 through 5 — the workspace scaffold, the codemods, the LLM fallback, and above all the verification gate — don't exist yet. If you're picturing a working migration tool, you're picturing where this is going, not where it is. Progress lives in [docs/milestones](docs/milestones).
 
 ## What this is
 
@@ -34,7 +34,18 @@ Full detail on each stage, including exactly which 10 patterns are in scope and 
 
 ## Running it
 
-Not yet runnable — see the status note above. Once M1 lands, local CLI usage will look like:
+The full `migrate` command doesn't exist yet — that needs the codemods (M1), the verification gate (M2), and the LLM fallback (M3), none of which are built. What does exist today is Stage 0 + 1 on their own:
+
+```bash
+git clone https://github.com/AshwinSathian/angularjs-migration-copilot.git
+cd angularjs-migration-copilot && npm install
+npx nx run migration-core:build
+node libs/migration-core/dist/cli.js inventory ./path/to/an/angularjs/repo
+```
+
+which detects the AngularJS version, build tooling, and test runner, runs the Stage 0 secrets scan, and prints a JSON dependency graph of every controller, directive, service, factory, filter, `.component()`, route, and `$watch` usage it finds. No transforms happen yet — it's report-only, by design (see [docs/milestones/m0-inventory.md](docs/milestones/m0-inventory.md)).
+
+Once M1 lands, the eventual local CLI usage will look like:
 
 ```bash
 npx angularjs-migration-copilot migrate ./path/to/your/repo --provider groq
