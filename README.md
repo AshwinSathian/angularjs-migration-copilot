@@ -1,6 +1,6 @@
 # AngularJS → Angular Migration Copilot
 
-**Status: early build.** Stages 0 and 1 (ingest + inventory, M0) are implemented, tested, and have been run against a real pinned fixture repo. Stages 1.5 through 5 — the workspace scaffold, the codemods, the LLM fallback, and above all the verification gate — don't exist yet. If you're picturing a working migration tool, you're picturing where this is going, not where it is. Progress lives in [docs/milestones](docs/milestones).
+**Status: early build.** Stages 0 and 1 (ingest + inventory, M0) are implemented, tested, and have been run against a real pinned fixture repo. Stages 1.5 through 5 — the workspace scaffold, the codemods, the LLM fallback, and above all the verification gate — don't exist yet. If you're picturing a working migration tool, you're picturing where this is going, not where it is. Current status and what's next: [docs/PROGRESS.md](docs/PROGRESS.md). Per-milestone scope and definition of done: [docs/milestones](docs/milestones).
 
 ## What this is
 

@@ -1,6 +1,6 @@
 # M0 — Inventory Scanner
 
-**Status:** implementation complete, adversarially reviewed, awaiting your final sign-off
+**Status:** done — merged via [PR #1](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/1). Implementation, adversarial review, and a real-fixture run are complete; the hands-on spot-check this milestone's own DoD describes below is still worth doing whenever you're next in this code, but isn't blocking M0.5.
 **Estimate:** 1–2 weeks
 **Depends on:** nothing — this is the first milestone
 
