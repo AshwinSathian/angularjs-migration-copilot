@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { assertCompiles } from './assert-compiles.js';
 import { transformScopeAssignmentToClassProperty } from './scope-assignment-to-class-property.js';
 import type { CodemodResult } from './types.js';
 
@@ -355,6 +356,7 @@ describe('transformScopeAssignmentToClassProperty', () => {
     expect(result.output).toContain('constructor(private $scope: any)');
     expect(result.output).toContain('this.items = [];');
     expect(result.output).not.toContain('function MainCtrl');
+    assertCompiles(result.output);
   });
 
   it('resolves a named declaration even when a Ctrl.$inject = [...] ng-annotate assignment sits between the call and the declaration', () => {
@@ -381,6 +383,75 @@ describe('transformScopeAssignmentToClassProperty', () => {
     expect(result.output).toContain('class MainCtrl {');
     expect(result.output).toContain('this.labels = [1];');
     expect(result.output).not.toContain('function MainCtrl');
+    assertCompiles(result.output);
+  });
+
+  it('deletes every $inject annotation for the same function, not just the first', () => {
+    // A real bug caught by a second adversarial review round: an earlier
+    // version of findInjectAssignmentStatements returned the *first*
+    // matching statement and stopped, silently leaving a second
+    // `Ctrl.$inject = [...]` assignment in the output — a real TS2339
+    // once the binding is a class, confirmed by actually running the
+    // codemod and typechecking the result before this fix.
+    const before = [
+      "angular.module('app').controller('MainCtrl', MainCtrl);",
+      "MainCtrl.$inject = ['$scope'];",
+      "MainCtrl.$inject = ['$scope'];",
+      'function MainCtrl($scope) { $scope.x = 1; }',
+    ].join('\n');
+
+    const result = transformScopeAssignmentToClassProperty(before);
+
+    assertMatched(result);
+    expect(result.output).toContain('class MainCtrl {');
+    expect(result.output).not.toContain('$inject');
+    assertCompiles(result.output);
+  });
+
+  it('leaves a $inject assignment nested inside another expression untouched, and skips the whole candidate rather than delete the wrong range', () => {
+    // A critical bug caught by a second adversarial review round:
+    // getFirstAncestorByKind walked past the ParenthesizedExpression/
+    // VariableDeclaration wrapper and resolved `var deps = (MainCtrl.$inject
+    // = [...])` to the *enclosing var statement* — deleting that, rather
+    // than refusing to touch it, deleted unrelated surrounding code.
+    // Now rejected outright: the assignment's own identifier counts as
+    // an unaccounted-for reference to the function, so the whole
+    // candidate is safely skipped instead of guessed at.
+    const before = [
+      '(function () {',
+      '  function MainCtrl($scope) { $scope.x = 1; }',
+      "  var deps = (MainCtrl.$inject = ['$scope']);",
+      "  angular.module('app').controller('MainCtrl', MainCtrl);",
+      '  var KEEP = "SHOULD_SURVIVE";',
+      '})();',
+    ].join('\n');
+
+    const result = transformScopeAssignmentToClassProperty(before);
+
+    expect(result).toEqual({
+      matched: false,
+      reason: 'no bare-function controller with a $scope property assignment found',
+    });
+  });
+
+  it('skips a candidate whose function is referenced somewhere other than its own .controller(X, X) call', () => {
+    // A real bug caught by a second adversarial review round: ADR-031
+    // claimed the class is "always declared before its only reference,"
+    // but nothing verified it actually was the *only* one. A
+    // `.prototype` extension before the registration resurfaces the
+    // exact TS2449 bug this named-declaration path exists to avoid.
+    const before = [
+      'function MainCtrl($scope) { $scope.x = 1; }',
+      'MainCtrl.prototype.helper = function () { return 1; };',
+      "angular.module('app').controller('MainCtrl', MainCtrl);",
+    ].join('\n');
+
+    const result = transformScopeAssignmentToClassProperty(before);
+
+    expect(result).toEqual({
+      matched: false,
+      reason: 'no bare-function controller with a $scope property assignment found',
+    });
   });
 
   it('replaces a named declaration inside its own IIFE in place, without hoisting it out', () => {
@@ -402,6 +473,7 @@ describe('transformScopeAssignmentToClassProperty', () => {
     const classIndex = result.output.indexOf('class MainCtrl {');
     expect(classIndex).toBeGreaterThan(iifeOpenIndex);
     expect(result.output).toContain('this.x = 1;');
+    assertCompiles(result.output);
   });
 
   it('declares the class before the .controller(X, X) call, not after, since class declarations do not hoist the way the original function did', () => {
@@ -423,6 +495,7 @@ describe('transformScopeAssignmentToClassProperty', () => {
     expect(classIndex).toBeGreaterThanOrEqual(0);
     expect(classIndex).toBeLessThan(callIndex);
     expect(result.output).not.toContain('function MainCtrl');
+    assertCompiles(result.output);
   });
 
   it('deletes a Ctrl.$inject = [...] annotation alongside the named declaration, since it becomes a TypeScript error once the binding is a class', () => {
@@ -440,21 +513,33 @@ describe('transformScopeAssignmentToClassProperty', () => {
     assertMatched(result);
     expect(result.output).toContain('class MainCtrl {');
     expect(result.output).not.toContain('$inject');
+    assertCompiles(result.output);
   });
 
-  it('skips a second registration that resolves to the same already-claimed named function declaration', () => {
+  it('matches neither of two registrations that reference the same named function declaration', () => {
     // A real corruption bug caught by adversarial review: two matches
     // referencing the same underlying FunctionDeclaration each scheduled
     // deletion of its (identical) source span computed against the
     // *original* text; applying both against the once-shrunk output
-    // spliced into unrelated, already-shifted content. The fix dedups by
-    // the underlying function node, not just by class name.
+    // spliced into unrelated, already-shifted content.
+    //
+    // A second review round found that transforming just one of the two
+    // isn't actually safe either — the surviving call's own class
+    // insertion doesn't guarantee the class is declared before an
+    // untouched sibling call if that sibling sits earlier in the file,
+    // resurfacing the TDZ bug this path exists to avoid. `hasOtherReferences`
+    // now rejects both candidates upstream instead, before either
+    // reaches `collectBareFunctionControllerMatches`' rawMatches array —
+    // see controlleras-to-class.spec.ts's identical test for the full
+    // reasoning. `claimedNamedDeclarations` remains as defense-in-depth,
+    // but this scenario no longer reaches it.
     const before = "angular.module('app').controller('MainCtrl', MainCtrl);\nangular.module('app').controller('MainCtrl', MainCtrl);\nfunction MainCtrl($scope) { $scope.x = 1; }";
 
     const result = transformScopeAssignmentToClassProperty(before);
 
-    assertMatched(result);
-    expect(result.output).toContain('class MainCtrl {');
-    expect((result.output.match(/class MainCtrl/g) ?? []).length).toBe(1);
+    expect(result).toEqual({
+      matched: false,
+      reason: 'no bare-function controller with a $scope property assignment found',
+    });
   });
 });

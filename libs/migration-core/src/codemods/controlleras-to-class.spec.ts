@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { assertCompiles } from './assert-compiles.js';
 import { transformControllerAsToClass } from './controlleras-to-class.js';
 import type { CodemodResult } from './types.js';
 
@@ -223,6 +224,26 @@ describe('transformControllerAsToClass', () => {
     expect(result.output).toContain('var vm = this;');
     expect(result.output).toContain('vm.personalInfo = {};');
     expect(result.output).not.toContain('function WizardCtrl');
+    assertCompiles(result.output);
+  });
+
+  it('reports no match for a .controller("A", X) mismatched-name reference, the one idiom this codemod deliberately does not support', () => {
+    // The name-match guard (ADR-032) exists specifically to reject this:
+    // `namedFn.getName() === className` must hold before a candidate is
+    // even collected. Without it, a surviving candidate's call site
+    // would still read the original identifier (`X`) after `X`'s own
+    // declaration is deleted — an undefined-identifier bug, confirmed
+    // before this guard existed. Asserted directly here, independent of
+    // the dedup-by-function-node safety net (which this scenario used to
+    // exercise before the guard made it unreachable in practice).
+    const before = "angular.module('app').controller('OtherName', WizardCtrl);\nfunction WizardCtrl() { this.a = 1; }";
+
+    const result = transformControllerAsToClass(before);
+
+    expect(result).toEqual({
+      matched: false,
+      reason: 'no bare-function controller using the controllerAs (this/vm) idiom found',
+    });
   });
 
   it('does not collide with its own pre-existing function declaration when deleting and re-inserting a named reference', () => {
@@ -237,6 +258,7 @@ describe('transformControllerAsToClass', () => {
     assertMatched(result);
     expect(result.output).toContain('class MainCtrl {');
     expect(result.warnings ?? []).toEqual([]);
+    assertCompiles(result.output);
   });
 
   it('declares the class before the .controller(X, X) call, not after, since class declarations do not hoist the way the original function did', () => {
@@ -257,6 +279,7 @@ describe('transformControllerAsToClass', () => {
     expect(classIndex).toBeGreaterThanOrEqual(0);
     expect(classIndex).toBeLessThan(callIndex);
     expect(result.output).not.toContain('function MainCtrl');
+    assertCompiles(result.output);
   });
 
   it('deletes a Ctrl.$inject = [...] annotation alongside the named declaration, since it becomes a TypeScript error once the binding is a class', () => {
@@ -274,6 +297,102 @@ describe('transformControllerAsToClass', () => {
     assertMatched(result);
     expect(result.output).toContain('class MainCtrl {');
     expect(result.output).not.toContain('$inject');
+    assertCompiles(result.output);
+  });
+
+  it('deletes every $inject annotation for the same function, not just the first', () => {
+    // A real bug caught by a second adversarial review round: an earlier
+    // version of findInjectAssignmentStatements returned the *first*
+    // matching statement and stopped, silently leaving a second
+    // `Ctrl.$inject = [...]` assignment in the output — a real TS2339
+    // once the binding is a class, confirmed by actually running the
+    // codemod and typechecking the result before this fix.
+    const before = [
+      "angular.module('app').controller('MainCtrl', MainCtrl);",
+      "MainCtrl.$inject = ['$http'];",
+      "MainCtrl.$inject = ['$http', '$log'];",
+      'function MainCtrl($http, $log) { this.a = 1; }',
+    ].join('\n');
+
+    const result = transformControllerAsToClass(before);
+
+    assertMatched(result);
+    expect(result.output).toContain('class MainCtrl {');
+    expect(result.output).not.toContain('$inject');
+    assertCompiles(result.output);
+  });
+
+  it('leaves a $inject assignment nested inside another expression untouched, and skips the whole candidate rather than delete the wrong range', () => {
+    // A critical bug caught by a second adversarial review round:
+    // getFirstAncestorByKind walked past the ParenthesizedExpression/
+    // VariableDeclaration wrapper and resolved `var deps = (MyCtrl.$inject
+    // = [...])` to the *enclosing var statement* — deleting that, rather
+    // than refusing to touch it, deleted unrelated surrounding code
+    // (confirmed with a constructed marker string that visibly got
+    // corrupted when this sat inside an IIFE). Now rejected outright:
+    // the assignment's own identifier counts as an unaccounted-for
+    // reference to the function, so the whole candidate is safely
+    // skipped instead of guessed at.
+    const before = [
+      '(function () {',
+      '  function MyCtrl($scope) { this.a = 1; }',
+      "  var deps = (MyCtrl.$inject = ['$scope']);",
+      "  angular.module('app').controller('MyCtrl', MyCtrl);",
+      '  var KEEP = "SHOULD_SURVIVE";',
+      '})();',
+    ].join('\n');
+
+    const result = transformControllerAsToClass(before);
+
+    expect(result).toEqual({
+      matched: false,
+      reason: 'no bare-function controller using the controllerAs (this/vm) idiom found',
+    });
+  });
+
+  it('leaves a braceless if-body $inject assignment untouched, and skips the whole candidate rather than leave a dangling if', () => {
+    // A real bug from the same review round, the opposite direction:
+    // `if (x) MyCtrl.$inject = [...];` -- the assignment's *direct*
+    // parent really is an ExpressionStatement, but deleting it left a
+    // dangling `if (window.NG)` with no body. Rejected the same way:
+    // the statement's own parent (the IfStatement) isn't a Block or
+    // SourceFile, so it's left alone and the candidate is skipped.
+    const before = [
+      "if (window.NG) MyCtrl.$inject = ['$scope'];",
+      "angular.module('app').controller('MyCtrl', MyCtrl);",
+      'function MyCtrl($scope) { this.a = 1; }',
+    ].join('\n');
+
+    const result = transformControllerAsToClass(before);
+
+    expect(result).toEqual({
+      matched: false,
+      reason: 'no bare-function controller using the controllerAs (this/vm) idiom found',
+    });
+  });
+
+  it('skips a candidate whose function is referenced somewhere other than its own .controller(X, X) call, since declaring the class before just that one call is not enough', () => {
+    // A real bug caught by a second adversarial review round: ADR-031
+    // claimed the class is "always declared before its only reference,"
+    // but nothing verified it actually was the *only* one. A
+    // `.prototype` extension (or any other reference) before the
+    // registration resurfaces the exact TS2449 bug this whole
+    // named-declaration path exists to avoid, confirmed by actually
+    // typechecking the pre-fix output. Rather than compute a correct
+    // insertion point for every possible reference shape, an
+    // unaccounted-for reference is simply grounds to skip.
+    const before = [
+      'function MyCtrl($scope) { this.a = 1; }',
+      'MyCtrl.prototype.helper = function () { return 1; };',
+      "angular.module('app').controller('MyCtrl', MyCtrl);",
+    ].join('\n');
+
+    const result = transformControllerAsToClass(before);
+
+    expect(result).toEqual({
+      matched: false,
+      reason: 'no bare-function controller using the controllerAs (this/vm) idiom found',
+    });
   });
 
   it('skips a controller whose only $scope assignment is inside a this-rebinding boundary, rather than wrongly deferring to pattern #1', () => {
@@ -301,22 +420,34 @@ describe('transformControllerAsToClass', () => {
     expect(result.output).toContain("this.title = 'hi';");
   });
 
-  it('skips a second registration that resolves to the same already-claimed named function declaration', () => {
+  it('matches neither of two registrations that reference the same named function declaration', () => {
     // A real corruption bug caught by adversarial review: two matches
     // referencing the same underlying FunctionDeclaration each scheduled
     // their own deletion of its (identical) source span computed against
     // the *original* text; applying both against the once-shrunk output
-    // spliced into unrelated, already-shifted content. The fix dedups by
-    // the underlying function node, not just by class name — this case
-    // is additionally blocked by requiring the call's own identifier
-    // text to match the registration name, so it also never reaches the
-    // dedup path in practice; asserting the guard directly here.
+    // spliced into unrelated, already-shifted content.
+    //
+    // A second review round found that transforming just one of the two
+    // (with `claimedNamedDeclarations` skipping the other as ambiguous)
+    // isn't actually safe either: the surviving call's own class
+    // insertion only guarantees the class is declared before *that*
+    // call, not before the untouched sibling call — if the sibling sits
+    // earlier in the file, the exact TDZ bug this whole named-
+    // declaration path exists to avoid resurfaces for it. `fn`'s own
+    // name node correctly resolves two references (one per call), so
+    // `hasOtherReferences` now rejects *both* candidates upstream,
+    // before either ever reaches `collectBareFunctionControllerMatches`'
+    // rawMatches array — a stricter, actually-safe outcome, not merely a
+    // dedup. `claimedNamedDeclarations` is kept as defense-in-depth for
+    // any case that might someday slip past `hasOtherReferences`, but
+    // this specific scenario no longer reaches it.
     const before = "angular.module('app').controller('MainCtrl', MainCtrl);\nangular.module('app').controller('MainCtrl', MainCtrl);\nfunction MainCtrl() { this.x = 1; }";
 
     const result = transformControllerAsToClass(before);
 
-    assertMatched(result);
-    expect(result.output).toContain('class MainCtrl {');
-    expect((result.output.match(/class MainCtrl/g) ?? []).length).toBe(1);
+    expect(result).toEqual({
+      matched: false,
+      reason: 'no bare-function controller using the controllerAs (this/vm) idiom found',
+    });
   });
 });

@@ -11,6 +11,7 @@ import {
   isInsideThisRebindingBoundary,
   isPlainAssignment,
   resolvesUniquelyTo,
+  type BareFunctionControllerMatch,
   type PositionEdit,
   type WrappableFunction,
 } from './class-wrapping.js';
@@ -44,7 +45,7 @@ interface ScopeAssignment {
  * once instead of enumerating them one bug report at a time.
  */
 function resolvesToParam(identifier: Identifier, param: ParameterDeclaration): boolean {
-  return resolvesUniquelyTo(identifier, param);
+  return resolvesUniquelyTo(identifier, [param]);
 }
 
 /**
@@ -118,14 +119,7 @@ export function hasScopePropertyAssignment(fn: WrappableFunction): boolean {
   );
 }
 
-interface Candidate {
-  readonly className: string;
-  readonly fn: WrappableFunction;
-  readonly isNamedDeclaration: boolean;
-  readonly injectStatement: Node | undefined;
-  readonly topStmtStart: number;
-  readonly scopeEdits: PositionEdit[];
-}
+type Candidate = BareFunctionControllerMatch & { readonly scopeEdits: PositionEdit[] };
 
 export function transformScopeAssignmentToClassProperty(sourceText: string): CodemodResult {
   const project = new Project({
@@ -139,20 +133,10 @@ export function transformScopeAssignmentToClassProperty(sourceText: string): Cod
   const candidates: Candidate[] = [];
   const skipReasons: string[] = [];
   const usedClassNames = new Set<string>();
-  const claimedNamedDeclarations = new Set<Node>();
+  const claimedNamedDeclarations = new Set<WrappableFunction>();
 
   for (const match of rawMatches) {
     const { className, fn } = match;
-
-    if (match.isNamedDeclaration) {
-      if (claimedNamedDeclarations.has(fn)) {
-        skipReasons.push(
-          `${className}: another registration in this file already targets the same function declaration for deletion — ambiguous, not safely transformable`
-        );
-        continue;
-      }
-      claimedNamedDeclarations.add(fn);
-    }
 
     const scopeParam = fn.getParameters().find((p) => p.getName() === '$scope');
     if (!scopeParam) continue;
@@ -184,13 +168,24 @@ export function transformScopeAssignmentToClassProperty(sourceText: string): Cod
       continue;
     }
 
+    // Claimed only now — see controlleras-to-class.ts's identical check
+    // for why claiming eagerly (at match-collection time, before knowing
+    // whether this is a real candidate) produced a misleading ambiguity
+    // warning for a registration that was never actually going to
+    // transform.
+    if (match.isNamedDeclaration) {
+      if (claimedNamedDeclarations.has(fn)) {
+        skipReasons.push(
+          `${className}: another registration in this file already targets the same function declaration for deletion — ambiguous, not safely transformable`
+        );
+        continue;
+      }
+      claimedNamedDeclarations.add(fn);
+    }
+
     usedClassNames.add(className);
     candidates.push({
-      className,
-      fn,
-      isNamedDeclaration: match.isNamedDeclaration,
-      injectStatement: match.injectStatement,
-      topStmtStart: match.topStmtStart,
+      ...match,
       scopeEdits: assignments.map(({ object }) => ({
         pos: object.getStart(),
         end: object.getEnd(),

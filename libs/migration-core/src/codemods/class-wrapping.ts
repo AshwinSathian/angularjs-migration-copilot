@@ -1,4 +1,4 @@
-import { Node, SyntaxKind, type ArrowFunction, type BinaryExpression, type CallExpression, type FunctionDeclaration, type FunctionExpression, type Project, type PropertyAccessExpression, type SourceFile } from 'ts-morph';
+import { Node, SyntaxKind, type ArrowFunction, type BinaryExpression, type CallExpression, type FunctionDeclaration, type FunctionExpression, type Identifier, type Project, type PropertyAccessExpression, type SourceFile } from 'ts-morph';
 import { forEachPropertyAccessCall } from '../inventory/ast-helpers.js';
 
 /**
@@ -33,21 +33,19 @@ export function isPlainAssignment(node: BinaryExpression): boolean {
 
 /**
  * True if `identifier` resolves — via real symbol binding, not text
- * matching — to exactly one declaration, and that declaration is `target`
- * itself (a single node, e.g. pattern #1 checking `$scope` resolves to
- * the controller's own parameter) or is included in `target` (a list of
- * candidate nodes, e.g. pattern #2 checking an alias resolves to one of
- * its valid `var x = this` declarations). Requiring exactly one
- * declaration overall is correct here — unlike
- * `resolveNamedFunctionDeclaration`'s deliberately looser, type-filtered
- * check, which exists specifically because it *can't* require that (see
- * that function's own docstring for why).
+ * matching — to exactly one declaration, and that declaration is one of
+ * `targets` (e.g. pattern #1 checking `$scope` resolves to the
+ * controller's own parameter — a one-element array; pattern #2 checking
+ * an alias resolves to one of its valid `var x = this` declarations — a
+ * multi-element array). Requiring exactly one declaration overall is
+ * correct here — unlike `resolveNamedFunctionDeclaration`'s deliberately
+ * looser, type-filtered check, which exists specifically because it
+ * *can't* require that (see that function's own docstring for why).
  */
-export function resolvesUniquelyTo(identifier: Node, target: Node | readonly Node[]): boolean {
+export function resolvesUniquelyTo(identifier: Node, targets: readonly Node[]): boolean {
   if (!Node.isIdentifier(identifier)) return false;
   const declarations = identifier.getSymbol()?.getDeclarations() ?? [];
-  if (declarations.length !== 1) return false;
-  return Array.isArray(target) ? target.includes(declarations[0]) : declarations[0] === target;
+  return declarations.length === 1 && targets.includes(declarations[0]);
 }
 
 /**
@@ -214,50 +212,72 @@ export function classWrappingSkipReason(
   return undefined;
 }
 
-export interface BareFunctionControllerMatch {
+interface BareFunctionControllerMatchBase {
   readonly className: string;
   readonly fn: WrappableFunction;
   readonly sortKey: number;
   readonly topStmtStart: number;
-  /**
-   * True when `fn` is the `.controller('X', X)` named-reference idiom —
-   * `fn` is the separately-declared `function X(...) {...}` the
-   * identifier resolves to, not an inline function literal passed
-   * directly as the call's second argument. The dominant real-world
-   * shape (66 of 91 `.controller` calls across this project's own
-   * vendored `blur-admin`/`CoreUI-AngularJS` fixtures use it, 0 use an
-   * inline literal) — found only once pattern #2 was actually run
-   * against real fixture files and matched nothing, not assumed from the
-   * inline-literal shape patterns #1/#3 originally handled. See
-   * docs/decisions.md ADR-030. Determines how `buildClassSpliceEdits`
-   * splices the class in: a named declaration's own `function` statement
-   * is deleted and the class is inserted before the call instead (see
-   * that function's docstring for why in-place replacement is wrong),
-   * an inline literal is wrapped via insertion + call-arg replacement.
-   */
-  readonly isNamedDeclaration: boolean;
-  /**
-   * A `<name>.$inject = [...]` ng-annotate statement whose `<name>`
-   * resolves to `fn` (`undefined` if there isn't one) — only meaningful
-   * when `isNamedDeclaration` is true. Deleted alongside `fn` by
-   * `buildClassSpliceEdits`: the DI information it carries is now
-   * redundant with the emitted constructor's own parameters, and left in
-   * place it's a TypeScript error (`Property '$inject' does not exist on
-   * type 'typeof X'`) once `X` is a class instead of a function. See
-   * ADR-030.
-   */
-  readonly injectStatement: Node | undefined;
 }
+
+/**
+ * A discriminated union, not two independently-optional fields — `fn`'s
+ * shape is either an inline function literal, or (the dominant
+ * real-world shape, see the branch's own docstring) a `.controller('X',
+ * X)` named reference, which always carries its own `$inject`
+ * annotations (there can be zero, one, or several — see
+ * `findInjectAssignmentStatements`), never the other way around. This is
+ * the third occurrence of the same `isNamedDeclaration`/`injectStatement`
+ * pairing (this type, plus each pattern's own `Candidate` interface) —
+ * per this project's own "generalize once a third occurrence confirms
+ * the shape" precedent (ADR-028/029), that's the signal to make the
+ * illegal state (a non-named match carrying inject statements)
+ * unrepresentable rather than deferring again.
+ */
+export type BareFunctionControllerMatch =
+  | (BareFunctionControllerMatchBase & {
+      /** An inline function literal passed directly as the call's second argument. */
+      readonly isNamedDeclaration: false;
+    })
+  | (BareFunctionControllerMatchBase & {
+      /**
+       * `fn` is the separately-declared `function X(...) {...}` the
+       * call's identifier argument resolves to. The dominant real-world
+       * shape (66 of 91 `.controller` calls across this project's own
+       * vendored `blur-admin`/`CoreUI-AngularJS` fixtures use it, 0 use
+       * an inline literal) — found only once pattern #2 was actually
+       * run against real fixture files and matched nothing, not assumed
+       * from the inline-literal shape patterns #1/#3 originally
+       * handled. See docs/decisions.md ADR-030. Determines how
+       * `buildClassSpliceEdits` splices the class in: a named
+       * declaration's own `function` statement is deleted and the class
+       * is inserted before the call instead (see that function's
+       * docstring for why in-place replacement is wrong), an inline
+       * literal is wrapped via insertion + call-arg replacement.
+       */
+      readonly isNamedDeclaration: true;
+      /**
+       * Every `<name>.$inject = [...]` ng-annotate statement whose
+       * `<name>` resolves to `fn` (possibly empty). Deleted alongside
+       * `fn` by `buildClassSpliceEdits`: the DI information they carry
+       * is now redundant with the emitted constructor's own parameters,
+       * and left in place each is a TypeScript error (`Property
+       * '$inject' does not exist on type 'typeof X'`) once `X` is a
+       * class instead of a function. See ADR-030/ADR-032 — an earlier
+       * version of this field only ever captured the *first* such
+       * statement, silently leaving every other one in place.
+       */
+      readonly injectStatements: readonly Node[];
+    });
 
 /**
  * Resolves `identifier` to a `function <name>(...) {...}` declaration via
  * real symbol binding, not text matching — the same rigor
- * `resolvesToParam`/`resolvesToOneOf` already apply elsewhere in these
- * codemods. Returns `undefined` for anything else a `.controller` call's
- * second argument could be an identifier reference to (an imported
- * binding, a `var x = function () {}`, a class, ...) — this codemod only
- * recognizes the confirmed-dominant `function` declaration shape, not
- * every way a name could resolve to something function-shaped.
+ * `resolvesUniquelyTo` already applies elsewhere in these codemods.
+ * Returns `undefined` for anything else a `.controller` call's second
+ * argument could be an identifier reference to (an imported binding, a
+ * `var x = function () {}`, a class, ...) — this codemod only recognizes
+ * the confirmed-dominant `function` declaration shape, not every way a
+ * name could resolve to something function-shaped.
  *
  * Filters to the *function* declarations among the symbol's declarations
  * rather than requiring exactly one declaration overall — TypeScript's JS
@@ -278,12 +298,42 @@ function resolveNamedFunctionDeclaration(identifier: Node): FunctionDeclaration 
 }
 
 /**
- * Finds a `<name>.$inject = [...]` statement anywhere in `sourceFile`
- * whose `<name>` resolves — via real symbol binding, not text matching
- * — to `fn`. Searches the whole file, not just top-level statements: the
- * assignment can sit inside the same enclosing IIFE `fn` does.
+ * Every `<name>.$inject = [...]` statement in `sourceFile` whose `<name>`
+ * resolves — via real symbol binding, not text matching — to `fn`,
+ * paired with the identifier node itself (so callers can exclude it from
+ * an "are there other references to `fn`" check — see
+ * `collectBareFunctionControllerMatches`). Searches the whole file, not
+ * just top-level statements: the assignment can sit inside the same
+ * enclosing IIFE `fn` does.
+ *
+ * Two real bugs here, both found by adversarial review, both confirmed
+ * by actually running the codemod against a constructed file, not
+ * assumed from reading the traversal: (1) an earlier version returned
+ * the *first* match and stopped, silently leaving any second `$inject`
+ * statement for the same function untouched — a real `TS2339` in the
+ * output. (2) it accepted the assignment's *nearest* enclosing
+ * `ExpressionStatement` ancestor regardless of how deeply nested the
+ * assignment itself was — `getFirstAncestorByKind` walks straight past
+ * a `ParenthesizedExpression`/`VariableDeclaration` wrapper, so
+ * `var deps = (X.$inject = [...]);` resolved to the *enclosing var
+ * statement*, and deleting that (rather than refusing to touch it)
+ * deleted unrelated code around it — up to and including an entire IIFE
+ * when the assignment sat inside one, confirmed with a constructed
+ * marker string that visibly survived corruption. A single-statement
+ * `if` body without braces (`if (x) X.$inject = [...];`) has the same
+ * hazard from the other direction: the assignment's *direct* parent
+ * really is an `ExpressionStatement`, but deleting it leaves a dangling
+ * `if (x)` with no body. Both are now rejected by requiring the
+ * assignment's direct parent to be an `ExpressionStatement` *and* that
+ * statement's own parent to be a `Block` or `SourceFile` — i.e. a
+ * genuine standalone statement, not a sub-expression of something else
+ * and not the single-statement body of a control-flow construct. A
+ * non-conforming `$inject` assignment is simply left untouched rather
+ * than guessed at, same "skip when ambiguous" philosophy as everywhere
+ * else in this module.
  */
-function findInjectAssignmentStatement(sourceFile: SourceFile, fn: FunctionDeclaration): Node | undefined {
+function findInjectAssignmentStatements(sourceFile: SourceFile, fn: FunctionDeclaration): { statement: Node; identifier: Identifier }[] {
+  const results: { statement: Node; identifier: Identifier }[] = [];
   for (const expr of sourceFile.getDescendantsOfKind(SyntaxKind.BinaryExpression)) {
     if (!isPlainAssignment(expr)) continue;
     const left = expr.getLeft();
@@ -292,10 +342,48 @@ function findInjectAssignmentStatement(sourceFile: SourceFile, fn: FunctionDecla
     if (!Node.isIdentifier(object)) continue;
     const declarations = object.getSymbol()?.getDeclarations() ?? [];
     if (!declarations.includes(fn)) continue;
-    const statement = expr.getFirstAncestorByKind(SyntaxKind.ExpressionStatement);
-    if (statement) return statement;
+
+    const statement = expr.getParent();
+    if (!statement || !Node.isExpressionStatement(statement)) continue;
+    const statementParent = statement.getParent();
+    if (!statementParent || (!Node.isBlock(statementParent) && !Node.isSourceFile(statementParent))) continue;
+
+    results.push({ statement, identifier: object });
   }
-  return undefined;
+  return results;
+}
+
+/**
+ * True if `fn` has any reference other than `expectedReference` (the
+ * `.controller` call's own identifier argument) and the identifiers in
+ * `injectIdentifiers` (already accounted for — they're deleted alongside
+ * `fn`, so their presence doesn't threaten declare-before-use safety).
+ * `buildClassSpliceEdits` only guarantees the class is declared before
+ * *this* call's reference — if some other code (a `.prototype` extension,
+ * a second registration under another name, ...) references the same
+ * function earlier in the file, deleting the function and inserting the
+ * class later can still leave that other reference before the class's
+ * new declaration point, resurfacing the exact `TS2449` bug this whole
+ * named-declaration path exists to avoid. Confirmed by constructing a
+ * `X.prototype.helper = ...;` line before the registration and
+ * typechecking the (pre-this-check) output. Rather than compute a
+ * correct-for-every-reference insertion point, an unaccounted-for
+ * reference is simply grounds to skip the candidate — same "skip when
+ * ambiguous" philosophy as everywhere else in this module, and it keeps
+ * `buildClassSpliceEdits`'s "before *the* call" strategy honestly true
+ * for every candidate it actually processes.
+ */
+function hasOtherReferences(fn: FunctionDeclaration, expectedReference: Node, injectIdentifiers: readonly Identifier[]): boolean {
+  const nameNode = fn.getNameNode();
+  if (!nameNode) return false;
+  // findReferencesAsNodes() includes the declaration's own name node
+  // among its results (confirmed empirically, not assumed from the API
+  // docs) — that's not a "reference" in the sense this check cares
+  // about, it's the declaration itself, so it's excluded alongside the
+  // call's own argument and any $inject annotation's identifier.
+  return nameNode.findReferencesAsNodes().some(
+    (ref) => ref !== nameNode && ref !== expectedReference && !injectIdentifiers.includes(ref as Identifier)
+  );
 }
 
 /**
@@ -335,7 +423,6 @@ export function collectBareFunctionControllerMatches(project: Project): BareFunc
         sortKey,
         topStmtStart: nearestInsertionPointStart(call),
         isNamedDeclaration: false,
-        injectStatement: undefined,
       });
       return;
     }
@@ -350,16 +437,20 @@ export function collectBareFunctionControllerMatches(project: Project): BareFunc
     // duplicate-target ambiguity the collect/validate loop's own
     // `claimedNamedDeclarations` dedup guards against.
     const namedFn = resolveNamedFunctionDeclaration(definitionArg);
-    if (namedFn && namedFn.getName() === className) {
-      rawMatches.push({
-        className,
-        fn: namedFn,
-        sortKey,
-        topStmtStart: nearestInsertionPointStart(call),
-        isNamedDeclaration: true,
-        injectStatement: findInjectAssignmentStatement(sourceFile, namedFn),
-      });
-    }
+    if (!namedFn || namedFn.getName() !== className) return;
+
+    const injectAssignments = findInjectAssignmentStatements(sourceFile, namedFn);
+    const injectIdentifiers = injectAssignments.map((a) => a.identifier);
+    if (hasOtherReferences(namedFn, definitionArg, injectIdentifiers)) return;
+
+    rawMatches.push({
+      className,
+      fn: namedFn,
+      sortKey,
+      topStmtStart: nearestInsertionPointStart(call),
+      isNamedDeclaration: true,
+      injectStatements: injectAssignments.map((a) => a.statement),
+    });
   });
 
   return rawMatches.sort((a, b) => a.sortKey - b.sortKey);
@@ -384,22 +475,25 @@ export function collectBareFunctionControllerMatches(project: Project): BareFunc
  *   declaration — a real compile error (`Class 'X' used before its
  *   declaration`), confirmed by actually typechecking the codemod's own
  *   output before this fix, not assumed. Instead: delete the original
- *   `function` statement (and its `$inject` annotation, if any —
- *   `BareFunctionControllerMatch#injectStatement`) and insert the class
+ *   `function` statement (and every `$inject` annotation found for it —
+ *   `BareFunctionControllerMatch#injectStatements`) and insert the class
  *   before the call's own enclosing statement (`topStmtStart`, the same
- *   IIFE-safe position the inline-literal path already uses) — the class
- *   is then always declared before its only reference, regardless of
- *   where the original function happened to sit in the file.
+ *   IIFE-safe position the inline-literal path already uses). Combined
+ *   with `hasOtherReferences`' refusal to match a candidate with any
+ *   other reference to the same function, the class is then always
+ *   declared before every reference to it that this codemod actually
+ *   processes, regardless of where the original function happened to sit
+ *   in the file.
  */
 export function buildClassSpliceEdits(
-  match: Pick<BareFunctionControllerMatch, 'className' | 'fn' | 'topStmtStart' | 'isNamedDeclaration' | 'injectStatement'>,
+  match: BareFunctionControllerMatch,
   classText: string
 ): { readonly insertion: { readonly pos: number; readonly text: string }; readonly replacements: readonly PositionEdit[] } {
   if (match.isNamedDeclaration) {
-    const replacements: PositionEdit[] = [{ pos: match.fn.getStart(true), end: match.fn.getEnd(), replacement: '' }];
-    if (match.injectStatement) {
-      replacements.push({ pos: match.injectStatement.getStart(true), end: match.injectStatement.getEnd(), replacement: '' });
-    }
+    const replacements: PositionEdit[] = [
+      { pos: match.fn.getStart(true), end: match.fn.getEnd(), replacement: '' },
+      ...match.injectStatements.map((stmt) => ({ pos: stmt.getStart(true), end: stmt.getEnd(), replacement: '' })),
+    ];
     return { insertion: { pos: match.topStmtStart, text: classText }, replacements };
   }
   return {

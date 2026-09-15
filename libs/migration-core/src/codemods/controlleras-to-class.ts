@@ -11,6 +11,7 @@ import {
   isInsideThisRebindingBoundary,
   isPlainAssignment,
   resolvesUniquelyTo,
+  type BareFunctionControllerMatch,
   type PositionEdit,
   type WrappableFunction,
 } from './class-wrapping.js';
@@ -94,14 +95,6 @@ function isControllerAsIdiom(fn: WrappableFunction): boolean {
   return hasDirectThisAssignment(fn) || hasAliasPropertyAssignment(fn, findValidAliasDeclarations(fn));
 }
 
-interface Candidate {
-  readonly className: string;
-  readonly fn: WrappableFunction;
-  readonly isNamedDeclaration: boolean;
-  readonly injectStatement: Node | undefined;
-  readonly topStmtStart: number;
-}
-
 export function transformControllerAsToClass(sourceText: string): CodemodResult {
   const project = new Project({
     useInMemoryFileSystem: true,
@@ -111,23 +104,13 @@ export function transformControllerAsToClass(sourceText: string): CodemodResult 
 
   const rawMatches = collectBareFunctionControllerMatches(project);
 
-  const candidates: Candidate[] = [];
+  const candidates: BareFunctionControllerMatch[] = [];
   const skipReasons: string[] = [];
   const usedClassNames = new Set<string>();
-  const claimedNamedDeclarations = new Set<Node>();
+  const claimedNamedDeclarations = new Set<WrappableFunction>();
 
   for (const match of rawMatches) {
     const { className, fn } = match;
-
-    if (match.isNamedDeclaration) {
-      if (claimedNamedDeclarations.has(fn)) {
-        skipReasons.push(
-          `${className}: another registration in this file already targets the same function declaration for deletion — ambiguous, not safely transformable`
-        );
-        continue;
-      }
-      claimedNamedDeclarations.add(fn);
-    }
 
     if (!isControllerAsIdiom(fn)) continue;
 
@@ -148,14 +131,28 @@ export function transformControllerAsToClass(sourceText: string): CodemodResult 
       continue;
     }
 
+    // Claimed only now — after every other check has already decided
+    // this candidate would otherwise be transformed — not the moment a
+    // named-declaration match is seen. Claiming eagerly meant a second
+    // registration sharing a function that was *never* going to be a
+    // real hit (e.g. no controllerAs idiom present at all) still got a
+    // misleading "already targets the same function declaration"
+    // ambiguity warning instead of silently not matching, same as any
+    // other non-candidate. Found by adversarial review, confirmed by
+    // constructing exactly that file and observing the wrong reason
+    // surface in `CodemodResult`'s warnings.
+    if (match.isNamedDeclaration) {
+      if (claimedNamedDeclarations.has(fn)) {
+        skipReasons.push(
+          `${className}: another registration in this file already targets the same function declaration for deletion — ambiguous, not safely transformable`
+        );
+        continue;
+      }
+      claimedNamedDeclarations.add(fn);
+    }
+
     usedClassNames.add(className);
-    candidates.push({
-      className,
-      fn,
-      isNamedDeclaration: match.isNamedDeclaration,
-      injectStatement: match.injectStatement,
-      topStmtStart: match.topStmtStart,
-    });
+    candidates.push(match);
   }
 
   if (candidates.length === 0) {
