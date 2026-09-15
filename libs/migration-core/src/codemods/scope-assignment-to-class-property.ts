@@ -1,16 +1,17 @@
 import { Node, Project, SyntaxKind, type BinaryExpression, type Identifier, type ParameterDeclaration } from 'ts-morph';
-import { forEachPropertyAccessCall } from '../inventory/ast-helpers.js';
 import {
   applyEdits,
+  buildClassSpliceEdits,
   buildClassText,
+  classWrappingSkipReason,
+  collectBareFunctionControllerMatches,
   constructorParamsText,
   functionBodyText,
   groupInsertionsByPosition,
-  hasExistingTopLevelBinding,
   isInsideThisRebindingBoundary,
-  isSimpleParameter,
-  isValidClassName,
-  nearestInsertionPointStart,
+  isPlainAssignment,
+  resolvesUniquelyTo,
+  type BareFunctionControllerMatch,
   type PositionEdit,
   type WrappableFunction,
 } from './class-wrapping.js';
@@ -26,14 +27,6 @@ import type { CodemodResult } from './types.js';
  * directive-link concept, not something services are conventionally
  * injected with. Scoping decision recorded in docs/decisions.md.
  */
-function isBareFunctionController(methodName: string): boolean {
-  return methodName === 'controller';
-}
-
-function isPlainAssignment(node: BinaryExpression): boolean {
-  return node.getOperatorToken().getKind() === SyntaxKind.EqualsToken;
-}
-
 interface ScopeAssignment {
   readonly assignment: BinaryExpression;
   readonly object: Identifier;
@@ -52,8 +45,7 @@ interface ScopeAssignment {
  * once instead of enumerating them one bug report at a time.
  */
 function resolvesToParam(identifier: Identifier, param: ParameterDeclaration): boolean {
-  const declarations = identifier.getSymbol()?.getDeclarations() ?? [];
-  return declarations.length === 1 && declarations[0] === param;
+  return resolvesUniquelyTo(identifier, [param]);
 }
 
 /**
@@ -103,23 +95,31 @@ function isReassigned(fn: WrappableFunction, scopeParam: ParameterDeclaration): 
   });
 }
 
-interface RawMatch {
-  readonly className: string;
-  readonly fn: WrappableFunction;
-  readonly sortKey: number;
-  readonly topStmtStart: number;
-  readonly fnStart: number;
-  readonly fnEnd: number;
+/**
+ * True if `fn` has at least one `$scope.<name> = value` assignment this
+ * pattern would actually touch — exported so pattern #2 (controllerAs)
+ * can exclude a controller already claimed here, keeping the two
+ * patterns non-overlapping the same way DI style already keeps #1 and #3
+ * non-overlapping. Excludes an assignment inside a nested this-rebinding
+ * boundary (the same check `transformScopeAssignmentToClassProperty`
+ * itself uses to skip the whole registration): without it, a controller
+ * whose *only* `$scope.x = y` is inside such a boundary was reported as
+ * "pattern #1's territory" by pattern #2, while pattern #1 itself would
+ * skip that same registration — silently missed by both, undercounting
+ * the mechanical hit-rate. Found by adversarial review, confirmed by
+ * actually running both codemods against the same constructed file
+ * before fixing, not assumed from reading the two skip conditions side
+ * by side.
+ */
+export function hasScopePropertyAssignment(fn: WrappableFunction): boolean {
+  const scopeParam = fn.getParameters().find((p) => p.getName() === '$scope');
+  if (!scopeParam) return false;
+  return findScopeAssignments(fn, scopeParam).some(
+    ({ assignment }) => !isInsideThisRebindingBoundary(assignment, fn)
+  );
 }
 
-interface Candidate {
-  readonly className: string;
-  readonly fn: WrappableFunction;
-  readonly topStmtStart: number;
-  readonly fnStart: number;
-  readonly fnEnd: number;
-  readonly scopeEdits: PositionEdit[];
-}
+type Candidate = BareFunctionControllerMatch & { readonly scopeEdits: PositionEdit[] };
 
 export function transformScopeAssignmentToClassProperty(sourceText: string): CodemodResult {
   const project = new Project({
@@ -128,33 +128,12 @@ export function transformScopeAssignmentToClassProperty(sourceText: string): Cod
   });
   const sourceFile = project.createSourceFile('/virtual/app.js', sourceText);
 
-  // Same collect-then-validate-in-true-source-order structure pattern #3
-  // uses, for the same reason: a chained `.controller(...).controller(...)`
-  // visits its outermost (last-in-source) call first during traversal.
-  const rawMatches: RawMatch[] = [];
-
-  forEachPropertyAccessCall(project, (call, expression) => {
-    if (!isBareFunctionController(expression.getName())) return;
-
-    const [nameArg, definitionArg] = call.getArguments();
-    if (!nameArg || !Node.isStringLiteral(nameArg)) return;
-    if (!definitionArg || !(Node.isFunctionExpression(definitionArg) || Node.isArrowFunction(definitionArg))) return;
-
-    rawMatches.push({
-      className: nameArg.getLiteralText(),
-      fn: definitionArg,
-      sortKey: expression.getNameNode().getStart(),
-      topStmtStart: nearestInsertionPointStart(call),
-      fnStart: definitionArg.getStart(),
-      fnEnd: definitionArg.getEnd(),
-    });
-  });
-
-  rawMatches.sort((a, b) => a.sortKey - b.sortKey);
+  const rawMatches = collectBareFunctionControllerMatches(project);
 
   const candidates: Candidate[] = [];
   const skipReasons: string[] = [];
   const usedClassNames = new Set<string>();
+  const claimedNamedDeclarations = new Set<WrappableFunction>();
 
   for (const match of rawMatches) {
     const { className, fn } = match;
@@ -177,30 +156,36 @@ export function transformScopeAssignmentToClassProperty(sourceText: string): Cod
       continue;
     }
 
-    if (!isValidClassName(className)) {
-      skipReasons.push(`${className}: not a valid class identifier`);
+    const skipReason = classWrappingSkipReason(
+      className,
+      fn,
+      sourceFile,
+      usedClassNames,
+      match.isNamedDeclaration ? fn : undefined
+    );
+    if (skipReason) {
+      skipReasons.push(skipReason);
       continue;
     }
 
-    if (usedClassNames.has(className) || hasExistingTopLevelBinding(sourceFile, className)) {
-      skipReasons.push(`${className}: duplicate registration name in this file — ambiguous which one to keep, not safely transformable`);
-      continue;
-    }
-
-    if (!fn.getParameters().every(isSimpleParameter)) {
-      skipReasons.push(
-        `${className}: has a destructured, default-valued, or rest parameter — not safely transformable`
-      );
-      continue;
+    // Claimed only now — see controlleras-to-class.ts's identical check
+    // for why claiming eagerly (at match-collection time, before knowing
+    // whether this is a real candidate) produced a misleading ambiguity
+    // warning for a registration that was never actually going to
+    // transform.
+    if (match.isNamedDeclaration) {
+      if (claimedNamedDeclarations.has(fn)) {
+        skipReasons.push(
+          `${className}: another registration in this file already targets the same function declaration for deletion — ambiguous, not safely transformable`
+        );
+        continue;
+      }
+      claimedNamedDeclarations.add(fn);
     }
 
     usedClassNames.add(className);
     candidates.push({
-      className,
-      fn,
-      topStmtStart: match.topStmtStart,
-      fnStart: match.fnStart,
-      fnEnd: match.fnEnd,
+      ...match,
       scopeEdits: assignments.map(({ object }) => ({
         pos: object.getStart(),
         end: object.getEnd(),
@@ -222,15 +207,14 @@ export function transformScopeAssignmentToClassProperty(sourceText: string): Cod
   const replacements: PositionEdit[] = [];
 
   for (const candidate of candidates) {
-    insertions.push({
-      pos: candidate.topStmtStart,
-      text: buildClassText(
-        candidate.className,
-        constructorParamsText(candidate.fn),
-        functionBodyText(candidate.fn, candidate.scopeEdits)
-      ),
-    });
-    replacements.push({ pos: candidate.fnStart, end: candidate.fnEnd, replacement: candidate.className });
+    const classText = buildClassText(
+      candidate.className,
+      constructorParamsText(candidate.fn),
+      functionBodyText(candidate.fn, candidate.scopeEdits)
+    );
+    const edits = buildClassSpliceEdits(candidate, classText);
+    insertions.push(edits.insertion);
+    replacements.push(...edits.replacements);
   }
 
   const output = applyEdits(sourceFile.getFullText(), [
