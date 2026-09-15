@@ -1,4 +1,4 @@
-import { Node, Project, type ArrowFunction, type FunctionExpression } from 'ts-morph';
+import { Node, Project, type ArrowFunction, type FunctionExpression, type PropertyAccessExpression, type SourceFile } from 'ts-morph';
 import { extractDependencyNames, forEachPropertyAccessCall } from '../inventory/ast-helpers.js';
 import type { CodemodResult } from './types.js';
 
@@ -16,7 +16,25 @@ const TRANSFORMABLE_KINDS = new Set(['controller', 'service', 'factory']);
 
 const VALID_IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
+/** ECMA-262 reserved words — `VALID_IDENTIFIER` alone accepts these (they're syntactically identifier-shaped) but none is legal as a class name. */
+const RESERVED_WORDS = new Set([
+  'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default', 'delete', 'do',
+  'else', 'export', 'extends', 'false', 'finally', 'for', 'function', 'if', 'import', 'in',
+  'instanceof', 'new', 'null', 'return', 'super', 'switch', 'this', 'throw', 'true', 'try',
+  'typeof', 'var', 'void', 'while', 'with', 'yield', 'let', 'static', 'enum', 'await',
+  'implements', 'package', 'protected', 'interface', 'private', 'public',
+]);
+
 type DiFunction = FunctionExpression | ArrowFunction;
+
+interface RawMatch {
+  readonly className: string;
+  readonly fn: Node | undefined;
+  readonly sortKey: number;
+  readonly topStmtStart: number;
+  readonly arrayStart: number;
+  readonly arrayEnd: number;
+}
 
 interface Candidate {
   readonly className: string;
@@ -26,13 +44,32 @@ interface Candidate {
   readonly arrayEnd: number;
 }
 
-function topLevelStatementStart(node: Node): number {
+/**
+ * The nearest point a class declaration can be inserted without being
+ * hoisted out of an enclosing scope it needs to stay inside — stops at
+ * the first ancestor whose parent is the `SourceFile` itself *or* a
+ * `Block`. Without the `Block` case, a registration inside the extremely
+ * common `(function () { ... })()` IIFE wrapper (62 of 66
+ * registration-bearing files across this project's own vendored
+ * fixtures use it) would have its class hoisted above the IIFE entirely,
+ * severing any reference the body makes to a closure variable declared
+ * inside that wrapper.
+ */
+function nearestInsertionPointStart(node: Node): number {
   let current = node;
   for (;;) {
     const parent = current.getParent();
-    if (!parent || Node.isSourceFile(parent)) return current.getStart();
+    if (!parent || Node.isSourceFile(parent) || Node.isBlock(parent)) return current.getStart();
     current = parent;
   }
+}
+
+function hasExistingTopLevelBinding(sourceFile: SourceFile, name: string): boolean {
+  return (
+    sourceFile.getFunction(name) !== undefined ||
+    sourceFile.getClass(name) !== undefined ||
+    sourceFile.getVariableDeclaration(name) !== undefined
+  );
 }
 
 /**
@@ -70,11 +107,18 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
   });
   const sourceFile = project.createSourceFile('/virtual/app.js', sourceText);
 
-  const candidates: Candidate[] = [];
-  const skipReasons: string[] = [];
-  const usedClassNames = new Set<string>();
+  // Collect every candidate call first, without validating — traversal
+  // order for a chained `.controller(...).controller(...)` visits the
+  // outermost (last-in-source) call first (ast-helpers.ts's documented
+  // quirk), so validating as matches are found would let two
+  // same-named registrations inside one chain "collide" in the wrong
+  // (reversed) order. Sorting by each call's own method-name-token
+  // position — not the call expression's start, which is identical for
+  // every link in a chain — restores true source order before any
+  // decision (which one is the "duplicate") gets made.
+  const rawMatches: RawMatch[] = [];
 
-  forEachPropertyAccessCall(project, (call, expression) => {
+  forEachPropertyAccessCall(project, (call, expression: PropertyAccessExpression) => {
     const methodName = expression.getName();
     if (!TRANSFORMABLE_KINDS.has(methodName)) return;
 
@@ -82,48 +126,67 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
     if (!nameArg || !Node.isStringLiteral(nameArg)) return;
     if (!definitionArg || !Node.isArrayLiteralExpression(definitionArg)) return;
 
-    const className = nameArg.getLiteralText();
-    const fn = definitionArg.getElements().at(-1);
+    rawMatches.push({
+      className: nameArg.getLiteralText(),
+      fn: definitionArg.getElements().at(-1),
+      sortKey: expression.getNameNode().getStart(),
+      topStmtStart: nearestInsertionPointStart(call),
+      arrayStart: definitionArg.getStart(),
+      arrayEnd: definitionArg.getEnd(),
+    });
+  });
+
+  rawMatches.sort((a, b) => a.sortKey - b.sortKey);
+
+  const candidates: Candidate[] = [];
+  const skipReasons: string[] = [];
+  const usedClassNames = new Set<string>();
+
+  for (const match of rawMatches) {
+    const { className, fn } = match;
+
     if (!fn || !(Node.isFunctionExpression(fn) || Node.isArrowFunction(fn))) {
       skipReasons.push(`${className}: array's last element is not a function — not safely transformable`);
-      return;
+      continue;
     }
 
-    if (!VALID_IDENTIFIER.test(className)) {
+    if (!VALID_IDENTIFIER.test(className) || RESERVED_WORDS.has(className)) {
       skipReasons.push(`${className}: not a valid class identifier`);
-      return;
+      continue;
     }
 
-    if (usedClassNames.has(className)) {
+    if (usedClassNames.has(className) || hasExistingTopLevelBinding(sourceFile, className)) {
       skipReasons.push(`${className}: duplicate registration name in this file — ambiguous which one to keep, not safely transformable`);
-      return;
+      continue;
     }
 
-    const dependencies = extractDependencyNames(definitionArg);
+    const definitionArg = fn.getParent();
+    if (!definitionArg || !Node.isArrayLiteralExpression(definitionArg)) continue;
+    const actualDependencies = extractDependencyNames(definitionArg);
     const paramCount = fn.getParameters().length;
-    if (dependencies.length !== paramCount) {
+    if (actualDependencies.length !== paramCount) {
       skipReasons.push(
-        `${className}: dependency array has ${dependencies.length} names but the function declares ${paramCount} parameter(s) — ambiguous binding, not safely transformable`
+        `${className}: dependency array has ${actualDependencies.length} names but the function declares ${paramCount} parameter(s) — ambiguous binding, not safely transformable`
       );
-      return;
+      continue;
     }
 
     if (!fn.getParameters().every(isSimpleParameter)) {
       skipReasons.push(
         `${className}: has a destructured, default-valued, or rest parameter — not safely transformable`
       );
-      return;
+      continue;
     }
 
     usedClassNames.add(className);
     candidates.push({
       className,
       fn,
-      topStmtStart: topLevelStatementStart(call),
-      arrayStart: definitionArg.getStart(),
-      arrayEnd: definitionArg.getEnd(),
+      topStmtStart: match.topStmtStart,
+      arrayStart: match.arrayStart,
+      arrayEnd: match.arrayEnd,
     });
-  });
+  }
 
   if (candidates.length === 0) {
     return {
@@ -136,20 +199,15 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
 
   // Array→identifier replacements are always at distinct spans, one per
   // candidate. Class insertions can share a position — e.g. three chained
-  // `.controller(...).controller(...).controller(...)` calls all live in
-  // the same single top-level statement — so those are grouped by
-  // position and concatenated in *source* order (candidates arrive in
-  // traversal order, which for a chain visits the outermost — i.e.
-  // last-in-source — call first, per ast-helpers.ts's own documented
-  // quirk; sorting by each candidate's own array-literal position undoes
-  // that before joining). Otherwise splicing them in one at a time at an
-  // identical offset would reverse their visual order.
-  const insertionsByPos = new Map<number, { sortKey: number; text: string }[]>();
+  // calls all landing in the same enclosing statement — so those are
+  // grouped by position and joined in true source order (candidates is
+  // already sorted that way, from rawMatches above).
+  const insertionsByPos = new Map<number, string[]>();
   const replacements: { pos: number; end: number; replacement: string }[] = [];
 
   for (const candidate of candidates) {
     const group = insertionsByPos.get(candidate.topStmtStart) ?? [];
-    group.push({ sortKey: candidate.arrayStart, text: buildClassText(candidate.className, candidate.fn) });
+    group.push(buildClassText(candidate.className, candidate.fn));
     insertionsByPos.set(candidate.topStmtStart, group);
 
     replacements.push({
@@ -160,13 +218,10 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
   }
 
   const edits = [
-    ...[...insertionsByPos.entries()].map(([pos, group]) => ({
+    ...[...insertionsByPos.entries()].map(([pos, classTexts]) => ({
       pos,
       end: pos,
-      replacement: `${group
-        .sort((a, b) => a.sortKey - b.sortKey)
-        .map((g) => g.text)
-        .join('\n\n')}\n\n`,
+      replacement: `${classTexts.join('\n\n')}\n\n`,
     })),
     ...replacements,
   ].sort((a, b) => b.pos - a.pos);

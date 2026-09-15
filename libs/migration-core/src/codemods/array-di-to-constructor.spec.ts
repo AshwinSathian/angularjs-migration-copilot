@@ -206,4 +206,83 @@ describe('transformArrayStyleDiToConstructor', () => {
       reason: "MainCtrl: array's last element is not a function — not safely transformable",
     });
   });
+
+  it('inserts the class inside an enclosing IIFE, not hoisted above it, preserving closure-variable access', () => {
+    // The dominant real-world shape (62 of 66 registration-bearing files
+    // across this project's own vendored fixtures are IIFE-wrapped).
+    // Hoisting the class all the way to the source file's top level would
+    // sever any reference the body makes to a variable the IIFE closes
+    // over.
+    const before = [
+      '(function () {',
+      "  'use strict';",
+      '  var helper = 42;',
+      "  angular.module('app').controller('MainCtrl', ['$scope', function ($scope) {",
+      '    $scope.x = helper + 1;',
+      '  }]);',
+      '})();',
+    ].join('\n');
+
+    const result = transformArrayStyleDiToConstructor(before);
+
+    assertMatched(result);
+    const iifeOpenIndex = result.output.indexOf('(function () {');
+    const classIndex = result.output.indexOf('class MainCtrl {');
+    expect(iifeOpenIndex).toBeGreaterThanOrEqual(0);
+    expect(classIndex).toBeGreaterThan(iifeOpenIndex);
+    expect(result.output).toContain('$scope.x = helper + 1;');
+  });
+
+  it('skips a registration whose name collides with an existing top-level function declaration', () => {
+    const before = [
+      'function MainCtrl() {}',
+      "angular.module('app').controller('MainCtrl', ['$scope', function ($scope) {",
+      '  $scope.x = 1;',
+      '}]);',
+    ].join('\n');
+
+    const result = transformArrayStyleDiToConstructor(before);
+
+    expect(result).toEqual({
+      matched: false,
+      reason: 'MainCtrl: duplicate registration name in this file — ambiguous which one to keep, not safely transformable',
+    });
+  });
+
+  it('skips a registration named after a reserved word', () => {
+    const before = "angular.module('app').service('default', ['$http', function ($http) { this.x = $http; }]);";
+
+    const result = transformArrayStyleDiToConstructor(before);
+
+    expect(result).toEqual({
+      matched: false,
+      reason: 'default: not a valid class identifier',
+    });
+  });
+
+  it('resolves a same-name collision inside a chain in true source order, not traversal order', () => {
+    // forEachPropertyAccessCall visits a chain's outermost (last-in-
+    // source) call first. Without sorting by each call's own position
+    // before deciding "which one is the duplicate," the second-in-source
+    // registration (the .service call here) would win instead of the
+    // first (.controller) — silently, and in reverse of what the earlier
+    // non-chained duplicate-name test already locks in.
+    const before = [
+      "angular.module('app')",
+      "  .controller('Foo', ['$scope', function ($scope) { $scope.a = 1; }])",
+      "  .service('Foo', ['$http', function ($http) { this.b = $http; }]);",
+    ].join('\n');
+
+    const result = transformArrayStyleDiToConstructor(before);
+
+    assertMatched(result);
+    expect(result.output).toContain('constructor(private $scope: any) { $scope.a = 1; }');
+    expect(result.output).toContain(".controller('Foo', Foo)");
+    // The losing registration is left untouched, not deleted — same as
+    // every other skip case, just still array-style DI.
+    expect(result.output).toContain(".service('Foo', ['$http', function ($http) { this.b = $http; }])");
+    expect(result.warnings).toEqual([
+      'Foo: duplicate registration name in this file — ambiguous which one to keep, not safely transformable',
+    ]);
+  });
 });
