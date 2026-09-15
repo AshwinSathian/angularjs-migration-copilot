@@ -1,10 +1,15 @@
 #!/usr/bin/env node
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { Command } from 'commander';
+import { transformArrayStyleDiToConstructor, type CodemodResult } from './codemods/index.js';
 import { runIngest } from './ingest/index.js';
 import { runInventoryScan } from './inventory/index.js';
 import { scaffoldTargetWorkspace, verifyWorkspaceBuilds } from './scaffold/index.js';
+
+const CODEMODS: Record<string, (sourceText: string) => CodemodResult> = {
+  'array-di-to-constructor': transformArrayStyleDiToConstructor,
+};
 
 const program = new Command();
 
@@ -78,6 +83,50 @@ program
       console.error('ng build succeeded');
     }
   );
+
+program
+  .command('codemod')
+  .description(
+    'Stage 2: run one deterministic codemod pattern against a single file and print the result. Never writes back to the source repo.'
+  )
+  .argument('<pattern>', `pattern to run: ${Object.keys(CODEMODS).join(', ')}`)
+  .argument('<filePath>', 'file to transform')
+  .option('-o, --out <file>', 'write the transformed output to this file instead of stdout')
+  .action(async (pattern: string, filePath: string, options: { out?: string }) => {
+    const transform = CODEMODS[pattern];
+    if (!transform) {
+      console.error(`Unknown pattern "${pattern}". Available: ${Object.keys(CODEMODS).join(', ')}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    const inputPath = resolve(filePath);
+    const sourceText = await readFile(inputPath, 'utf8');
+    const result = transform(sourceText);
+
+    if (!result.matched) {
+      console.error(`No transform applied: ${result.reason}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    if (result.warnings?.length) {
+      console.error(`Warnings (other registrations in this file left untouched):\n${result.warnings.join('\n')}`);
+    }
+
+    if (options.out) {
+      const outPath = resolve(options.out);
+      if (outPath === inputPath) {
+        console.error('Refusing to write --out over the input file — never writes back to the source repo.');
+        process.exitCode = 1;
+        return;
+      }
+      await writeFile(outPath, result.output, 'utf8');
+      console.error(`Wrote transformed file to ${outPath}`);
+    } else {
+      console.log(result.output);
+    }
+  });
 
 program.parseAsync(process.argv).catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : error);
