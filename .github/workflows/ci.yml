@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  secrets-scan:
+    name: Secrets scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # The rest of this pipeline (lint-and-typecheck, unit-tests,
+  # verification-negative-controls, dependency-boundary-check,
+  # fixture-integration) gets added incrementally as each milestone lands
+  # the tooling it depends on. See docs/architecture.md §5 and
+  # docs/decisions.md ADR-009 for why this file doesn't pretend those jobs
+  # exist yet.

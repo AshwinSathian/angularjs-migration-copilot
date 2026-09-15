@@ -1,0 +1,16 @@
+node_modules/
+dist/
+tmp/
+out-tsc/
+.nx/cache/
+.nx/workspace-data/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+*.tsbuildinfo
+.vscode/*
+!.vscode/extensions.json
+.idea/
