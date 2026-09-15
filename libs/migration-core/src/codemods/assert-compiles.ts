@@ -27,8 +27,16 @@ import { Project } from 'ts-morph';
  *   own globals and injected service names are untyped in this
  *   deliberately minimal compile context; real projects have `@types/
  *   angular` or equivalent.
+ * - 2683 (`'this' implicitly has type 'any'`) — can only occur inside a
+ *   plain, untransformed AngularJS function using `this.x = y`; a
+ *   codemod-emitted `class`'s own members never trigger it, `this` is
+ *   always typed inside one. Only surfaces when a nesting-conflict check
+ *   (`findNestedDeletionConflicts`, class-wrapping.ts) correctly leaves
+ *   an outer candidate's original function untouched — the same
+ *   "characteristic of the original idiom, not the codemod's output"
+ *   reasoning as 2339 above, not a new class of bug.
  */
-const IGNORED_DIAGNOSTIC_CODES = new Set([2339, 2304, 2571, 7006, 7034]);
+const IGNORED_DIAGNOSTIC_CODES = new Set([2339, 2304, 2571, 2683, 7006, 7034]);
 
 export function assertCompiles(outputSource: string): void {
   const project = new Project({

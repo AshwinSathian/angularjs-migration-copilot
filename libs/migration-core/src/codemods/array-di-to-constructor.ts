@@ -5,6 +5,7 @@ import {
   buildClassText,
   constructorParamsText,
   findInjectAssignmentStatements,
+  findNestedDeletionConflicts,
   functionBodyText,
   groupInsertionsByPosition,
   hasExistingTopLevelBinding,
@@ -13,6 +14,7 @@ import {
   isValidClassName,
   nearestInsertionPointStart,
   resolveNamedFunctionDeclaration,
+  type NestingCheckItem,
   type PositionEdit,
   type WrappableFunction,
 } from './class-wrapping.js';
@@ -188,7 +190,35 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
     });
   }
 
-  if (candidates.length === 0) {
+  // A named-declaration candidate's own function body can contain a
+  // second, unrelated registration's call as one of its statements —
+  // `hasOtherReferences` only rules out an *other* reference to the same
+  // function, not a sibling candidate's edit positions sitting nested
+  // inside this candidate's own deletion range. `applyEdits` assumes
+  // edits are disjoint; a nested deletion range breaks that assumption
+  // and corrupts the sibling's edits while still reporting success. See
+  // `findNestedDeletionConflicts`'s own docstring for the full repro.
+  const nestingItems: NestingCheckItem[] = candidates.map((c) => ({
+    protectedPositions: [
+      c.topStmtStart,
+      c.arrayStart,
+      c.arrayEnd,
+      ...(c.namedDecl
+        ? [c.namedDecl.declStart, c.namedDecl.declEnd, ...c.namedDecl.injectStatements.flatMap((s) => [s.getStart(true), s.getEnd()])]
+        : []),
+    ],
+    namedDeclRange: c.namedDecl ? { start: c.namedDecl.declStart, end: c.namedDecl.declEnd } : undefined,
+  }));
+  const conflictingIndices = findNestedDeletionConflicts(nestingItems);
+  const survivingCandidates = candidates.filter((c, i) => {
+    if (!conflictingIndices.has(i)) return true;
+    skipReasons.push(
+      `${c.className}: deleting the referenced function would also corrupt another registration nested inside it — not safely transformable`
+    );
+    return false;
+  });
+
+  if (survivingCandidates.length === 0) {
     return {
       matched: false,
       reason: skipReasons.length > 0
@@ -203,7 +233,7 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
   const insertions: { pos: number; text: string }[] = [];
   const replacements: PositionEdit[] = [];
 
-  for (const candidate of candidates) {
+  for (const candidate of survivingCandidates) {
     insertions.push({
       pos: candidate.topStmtStart,
       text: buildClassText(candidate.className, constructorParamsText(candidate.fn), functionBodyText(candidate.fn)),

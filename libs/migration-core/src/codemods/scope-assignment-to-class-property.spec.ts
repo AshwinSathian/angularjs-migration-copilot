@@ -564,4 +564,37 @@ describe('transformScopeAssignmentToClassProperty', () => {
       reason: 'no bare-function controller with a $scope property assignment found',
     });
   });
+
+  it('skips an outer registration whose body contains a second, unrelated registration nested inside it, but still transforms the inner one', () => {
+    // A broader form of the self-registration bug above, found by
+    // adversarial review of pattern #3's own reuse of the same
+    // machinery: `hasOtherReferences` only rules out an *other*
+    // reference to a candidate's own function, not a sibling candidate's
+    // edit positions sitting nested inside this candidate's own deletion
+    // range. Deleting MainCtrl's declaration here would also delete the
+    // text otherFn's own insertion/deletion edits are computed against,
+    // corrupting output while still reporting `matched: true` — confirmed
+    // by actually running this exact input before the fix. Fixed in
+    // `findNestedDeletionConflicts` (class-wrapping.ts), shared with
+    // pattern #3's array-style-DI path (array-di-to-constructor.spec.ts
+    // has the mirrored regression test).
+    const before = [
+      'function MainCtrl($scope) {',
+      '  $scope.x = 1;',
+      "  angular.module('app').controller('otherFn', otherFn);",
+      '}',
+      'function otherFn($scope) {',
+      '  $scope.y = 2;',
+      '}',
+      "angular.module('app').controller('MainCtrl', MainCtrl);",
+    ].join('\n');
+
+    const result = transformScopeAssignmentToClassProperty(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).not.toContain('class MainCtrl');
+    expect(result.output).toContain('class otherFn {');
+    expect(result.output).toContain('function MainCtrl($scope)');
+  });
 });

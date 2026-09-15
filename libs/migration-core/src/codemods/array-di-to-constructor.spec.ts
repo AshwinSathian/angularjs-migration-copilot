@@ -398,4 +398,41 @@ describe('transformArrayStyleDiToConstructor', () => {
         "MainCtrl: array's last element references a function used elsewhere in the file — ambiguous, not safely transformable",
     });
   });
+
+  it('skips an outer registration whose body contains a second, unrelated registration nested inside it, but still transforms the inner one', () => {
+    // A broader form of the self-registration bug above, found by a
+    // second adversarial review round: `hasOtherReferences` only rules
+    // out an *other* reference to a candidate's own function, not a
+    // sibling candidate's edit positions sitting nested inside this
+    // candidate's own deletion range. Deleting ctrlImpl's declaration
+    // here would also delete the text OtherCtrl's own insertion/
+    // replacement edits are computed against, corrupting output while
+    // still reporting `matched: true` — confirmed by actually running
+    // this exact input before the fix. Fixed in
+    // `findNestedDeletionConflicts` (class-wrapping.ts), shared with the
+    // bare-function `.controller('X', X)` path (mirrored regression
+    // tests in scope-assignment-to-class-property.spec.ts and
+    // controlleras-to-class.spec.ts).
+    const before = [
+      'function ctrlImpl($scope) {',
+      '  $scope.x = 1;',
+      "  angular.module('app').controller('OtherCtrl', ['$scope', otherFn]);",
+      '}',
+      'function otherFn($scope) {',
+      '  $scope.y = 2;',
+      '}',
+      "angular.module('app').controller('MainCtrl', ['$scope', ctrlImpl]);",
+    ].join('\n');
+
+    const result = transformArrayStyleDiToConstructor(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).not.toContain('class MainCtrl');
+    expect(result.output).toContain('class OtherCtrl {');
+    expect(result.output).toContain('function ctrlImpl($scope)');
+    expect(result.warnings).toEqual([
+      'MainCtrl: deleting the referenced function would also corrupt another registration nested inside it — not safely transformable',
+    ]);
+  });
 });

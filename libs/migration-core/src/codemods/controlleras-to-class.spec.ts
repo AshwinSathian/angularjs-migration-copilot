@@ -450,4 +450,37 @@ describe('transformControllerAsToClass', () => {
       reason: 'no bare-function controller using the controllerAs (this/vm) idiom found',
     });
   });
+
+  it('skips an outer registration whose body contains a second, unrelated registration nested inside it, but still transforms the inner one', () => {
+    // Found by adversarial review of pattern #3's own reuse of
+    // `hasOtherReferences`, and confirmed to reproduce here too since
+    // `collectBareFunctionControllerMatches` shares the same mechanism:
+    // `hasOtherReferences` only rules out an *other* reference to a
+    // candidate's own function, not a sibling candidate's edit positions
+    // sitting nested inside this candidate's deletion range. Deleting
+    // MainCtrl's declaration would also delete the text OtherCtrl's own
+    // insertion/deletion edits are computed against, corrupting output
+    // while still reporting `matched: true` — confirmed by actually
+    // running this exact input before the fix. Fixed in
+    // `findNestedDeletionConflicts` (class-wrapping.ts), shared with
+    // pattern #3's array-style-DI path.
+    const before = [
+      'function MainCtrl() {',
+      '  this.x = 1;',
+      "  angular.module('app').controller('OtherCtrl', OtherCtrl);",
+      '}',
+      'function OtherCtrl() {',
+      '  this.y = 2;',
+      '}',
+      "angular.module('app').controller('MainCtrl', MainCtrl);",
+    ].join('\n');
+
+    const result = transformControllerAsToClass(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).not.toContain('class MainCtrl');
+    expect(result.output).toContain('class OtherCtrl {');
+    expect(result.output).toContain('function MainCtrl()');
+  });
 });

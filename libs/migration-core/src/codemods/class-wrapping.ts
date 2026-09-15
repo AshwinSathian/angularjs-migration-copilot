@@ -406,6 +406,59 @@ export function hasOtherReferences(fn: FunctionDeclaration, expectedReference: N
 }
 
 /**
+ * One item's protected positions (every edit position it needs, both
+ * insertion and replacement/deletion) plus, if it deletes a named
+ * function declaration, that declaration's own `[start, end)` range.
+ */
+export interface NestingCheckItem {
+  readonly protectedPositions: readonly number[];
+  readonly namedDeclRange?: { readonly start: number; readonly end: number };
+}
+
+/**
+ * Indices (into `items`) of every item whose `namedDeclRange` strictly
+ * contains another item's protected position — a structural conflict
+ * `hasOtherReferences`'s per-candidate, self-only check cannot see, since
+ * it only knows about one candidate's own function at a time, not the
+ * full accepted set.
+ *
+ * `applyEdits` assumes every edit's `[pos, end)` is either disjoint from
+ * every other edit or exactly equal (the same-position insertion case
+ * `groupInsertionsByPosition` already merges) — never one *containing*
+ * another. A named-declaration candidate's own deletion range can
+ * violate that assumption even when `hasOtherReferences` correctly finds
+ * no *other* reference to that candidate's own function: nothing stops a
+ * sibling candidate's registration call from being written *inside* that
+ * function's body, referencing a completely different function. Deleting
+ * the outer function then also deletes the text the sibling's insertion/
+ * replacement edits are computed against, and `applyEdits` — which
+ * slices using each edit's *original*-text offsets — corrupts the
+ * output while still reporting `matched: true`. Confirmed by actually
+ * constructing exactly that file (an outer `$scope.x = y` controller
+ * whose body contains a second, unrelated `.controller(...)` call) and
+ * running it through both the array-style-DI codemod and the
+ * already-merged bare-function `.controller('X', X)` one — both produced
+ * visibly garbled, brace-unbalanced output before this check existed.
+ * The fix: reject the *outer* (containing) candidate entirely rather
+ * than try to compute a correct-for-every-nested-sibling edit order —
+ * same "skip when ambiguous" philosophy as everywhere else in this
+ * module. The nested sibling itself is unaffected and still transforms
+ * normally, since the outer function's declaration is now left in place.
+ */
+export function findNestedDeletionConflicts(items: readonly NestingCheckItem[]): ReadonlySet<number> {
+  const conflicting = new Set<number>();
+  items.forEach((item, i) => {
+    const range = item.namedDeclRange;
+    if (!range) return;
+    const hasConflict = items.some(
+      (other, j) => i !== j && other.protectedPositions.some((p) => p > range.start && p < range.end)
+    );
+    if (hasConflict) conflicting.add(i);
+  });
+  return conflicting;
+}
+
+/**
  * Collects every `.controller(name, ...)` registration across `project`
  * whose definition is bare-function DI — either an inline function
  * literal, or (the dominant real-world shape, see
@@ -472,7 +525,23 @@ export function collectBareFunctionControllerMatches(project: Project): BareFunc
     });
   });
 
-  return rawMatches.sort((a, b) => a.sortKey - b.sortKey);
+  const sorted = rawMatches.sort((a, b) => a.sortKey - b.sortKey);
+
+  // Same silent-exclusion precedent as the `namedFn`/`hasOtherReferences`
+  // checks above: a structurally-conflicting named-declaration match is
+  // treated as not safely recognized, not as a recognized-but-skipped
+  // candidate — consistent with how this function already handles every
+  // other case where resolving the named-reference shape turns out to be
+  // ambiguous.
+  const items: NestingCheckItem[] = sorted.map((m) => ({
+    protectedPositions: m.isNamedDeclaration
+      ? [m.topStmtStart, m.fn.getStart(true), m.fn.getEnd(), ...m.injectStatements.flatMap((s) => [s.getStart(true), s.getEnd()])]
+      : [m.topStmtStart, m.fn.getStart(), m.fn.getEnd()],
+    namedDeclRange: m.isNamedDeclaration ? { start: m.fn.getStart(true), end: m.fn.getEnd() } : undefined,
+  }));
+  const conflicting = findNestedDeletionConflicts(items);
+
+  return sorted.filter((_, i) => !conflicting.has(i));
 }
 
 /**
