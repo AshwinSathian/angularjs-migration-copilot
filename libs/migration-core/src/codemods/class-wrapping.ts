@@ -66,8 +66,54 @@ export function isSimpleParameter(param: { getNameNode: () => Node; hasInitializ
   return Node.isIdentifier(param.getNameNode()) && !param.hasInitializer() && !param.isRestParameter();
 }
 
+/**
+ * Enforces the `isSimpleParameter` invariant itself, at the one place
+ * that actually needs it to hold, rather than relying on every caller to
+ * remember to check first. A caller should still check `isSimpleParameter`
+ * up front to produce a proper, specific skip reason instead of an
+ * exception — this is the safety net for the case that gets forgotten,
+ * not the primary path.
+ */
 export function constructorParamsText(fn: WrappableFunction): string {
-  return fn.getParameters().map((p) => `private ${p.getName()}: any`).join(', ');
+  const params = fn.getParameters();
+  const nonSimple = params.find((p) => !isSimpleParameter(p));
+  if (nonSimple) {
+    throw new Error(
+      `constructorParamsText: parameter "${nonSimple.getName()}" is destructured, default-valued, or rest — callers must check isSimpleParameter before calling`
+    );
+  }
+  return params.map((p) => `private ${p.getName()}: any`).join(', ');
+}
+
+/**
+ * True if `node` sits inside a nested function or accessor boundary
+ * (relative to `outerFn`, exclusive of `outerFn` itself) whose own
+ * `this` is dynamically bound rather than inherited lexically from
+ * `outerFn` — a plain function expression/declaration, a class method,
+ * or a get/set accessor all rebind `this` based on how they're invoked,
+ * not where they're written. An arrow function is the one exception: it
+ * never rebinds `this`, so nesting inside one (without crossing another,
+ * non-arrow boundary first) is safe. Any codemod pattern that rewrites a
+ * free reference inside a wrapped function's body to `this.<x>` needs
+ * this check — pattern #1 ($scope.x = y) was the first, but the hazard
+ * isn't specific to it.
+ */
+export function isInsideThisRebindingBoundary(node: Node, outerFn: WrappableFunction): boolean {
+  let current: Node = node;
+  for (;;) {
+    const parent = current.getParent();
+    if (!parent || parent === outerFn) return false;
+    if (
+      Node.isFunctionExpression(parent) ||
+      Node.isFunctionDeclaration(parent) ||
+      Node.isMethodDeclaration(parent) ||
+      Node.isGetAccessorDeclaration(parent) ||
+      Node.isSetAccessorDeclaration(parent)
+    ) {
+      return true;
+    }
+    current = parent;
+  }
 }
 
 /**

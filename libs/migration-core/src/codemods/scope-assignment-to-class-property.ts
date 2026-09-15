@@ -1,4 +1,4 @@
-import { Node, Project, SyntaxKind, type BinaryExpression, type Identifier } from 'ts-morph';
+import { Node, Project, SyntaxKind, type BinaryExpression, type Identifier, type ParameterDeclaration } from 'ts-morph';
 import { forEachPropertyAccessCall } from '../inventory/ast-helpers.js';
 import {
   applyEdits,
@@ -7,6 +7,7 @@ import {
   functionBodyText,
   groupInsertionsByPosition,
   hasExistingTopLevelBinding,
+  isInsideThisRebindingBoundary,
   isSimpleParameter,
   isValidClassName,
   nearestInsertionPointStart,
@@ -39,57 +40,67 @@ interface ScopeAssignment {
 }
 
 /**
- * `$scope.<name> = <value>` where `$scope` is exactly the object being
- * assigned into — a single property level deep, matching the pattern's
- * literal `$scope.x = y` definition. A deeper chain (`$scope.a.b = y`) or
- * a computed member (`$scope[x] = y`) is a different shape, left
- * untouched rather than guessed at.
+ * True if `identifier` actually resolves — via ts-morph's real symbol
+ * binding, not text matching — to `param`'s own declaration. This is
+ * what correctly tells a `$scope.x = y` sitting inside a nested function
+ * apart from one where `$scope` has been shadowed by *any* kind of local
+ * binding (a nested function's own parameter, a `var`/`let`/`const`
+ * declared inside it, a `catch` clause, ...). A hand-rolled ancestor walk
+ * checking only "does a nested function declare its own `$scope`
+ * parameter" was tried first and missed the `var $scope = ...` case
+ * entirely — real binding resolution handles every shadowing shape at
+ * once instead of enumerating them one bug report at a time.
  */
-function asScopePropertyAssignment(node: BinaryExpression): ScopeAssignment | undefined {
+function resolvesToParam(identifier: Identifier, param: ParameterDeclaration): boolean {
+  const declarations = identifier.getSymbol()?.getDeclarations() ?? [];
+  return declarations.length === 1 && declarations[0] === param;
+}
+
+/**
+ * `$scope.<name> = <value>` where `$scope` resolves to `scopeParam` —
+ * `outerFn`'s own injected `$scope`, not a shadowed local of the same
+ * name — and is exactly the object being assigned into, a single
+ * property level deep, matching the pattern's literal `$scope.x = y`
+ * definition. A deeper chain (`$scope.a.b = y`) or a computed member
+ * (`$scope[x] = y`) is a different shape, left untouched rather than
+ * guessed at. A shadowed occurrence is excluded here rather than flagged
+ * as a skip — it genuinely isn't this pattern's target, since it refers
+ * to a different variable entirely; leaving it untouched is correct, not
+ * a compromise.
+ */
+function asScopePropertyAssignment(node: BinaryExpression, scopeParam: ParameterDeclaration): ScopeAssignment | undefined {
   if (!isPlainAssignment(node)) return undefined;
   const left = node.getLeft();
   if (!Node.isPropertyAccessExpression(left)) return undefined;
   const object = left.getExpression();
   if (!Node.isIdentifier(object) || object.getText() !== '$scope') return undefined;
+  if (!resolvesToParam(object, scopeParam)) return undefined;
   return { assignment: node, object };
 }
 
-function findScopeAssignments(fn: WrappableFunction): ScopeAssignment[] {
+function findScopeAssignments(fn: WrappableFunction, scopeParam: ParameterDeclaration): ScopeAssignment[] {
   return fn
     .getDescendantsOfKind(SyntaxKind.BinaryExpression)
-    .map(asScopePropertyAssignment)
+    .map((node) => asScopePropertyAssignment(node, scopeParam))
     .filter((match): match is ScopeAssignment => match !== undefined);
 }
 
 /**
- * True if rewriting this assignment's `$scope` to `this` would be wrong
- * because of a function boundary between it and `outerFn` (exclusive of
- * `outerFn` itself). Two distinct ways that happens, both checked here
- * rather than just the first one found: (1) a nested **non-arrow**
- * function — e.g. `$http.get(...).then(function (res) { $scope.x = ... })`
- * — rebinds `this` when called, so `this` inside it would no longer refer
- * to the class instance the way `$scope` correctly still refers to the
- * outer scope via closure; an arrow function doesn't have this problem,
- * since it never rebinds `this`. (2) any nested function (arrow or not)
- * that redeclares its own `$scope` parameter — e.g. a `$watch` callback's
- * `function (newVal, oldVal, $scope) {...}` third argument — shadows the
- * outer `$scope` with a different binding entirely, `this`-rebinding
- * aside.
+ * True if the controller's own `$scope` (not a shadowed local) is ever
+ * reassigned as a bare identifier anywhere in `fn` — e.g.
+ * `$scope = $scope.$new();`. Binding resolution alone can't catch this:
+ * a reassignment doesn't change *which* declaration `$scope` refers to,
+ * only its runtime value, so every `$scope.x = y` after such a line
+ * would still resolve to `scopeParam` and pass `asScopePropertyAssignment`
+ * — while actually mutating whatever `$scope` now holds, not the
+ * originally-injected value the class constructor captures.
  */
-function isUnsafeNestedAssignment(scopeAssignment: ScopeAssignment, outerFn: WrappableFunction): boolean {
-  let current: Node = scopeAssignment.assignment;
-  for (;;) {
-    const parent: Node | undefined = current.getParent();
-    if (!parent || parent === outerFn) return false;
-
-    if (Node.isFunctionExpression(parent) || Node.isArrowFunction(parent) || Node.isFunctionDeclaration(parent) || Node.isMethodDeclaration(parent)) {
-      const rebindsThis = !Node.isArrowFunction(parent);
-      const shadowsScope = parent.getParameters().some((p) => p.getName() === '$scope');
-      if (rebindsThis || shadowsScope) return true;
-    }
-
-    current = parent;
-  }
+function isReassigned(fn: WrappableFunction, scopeParam: ParameterDeclaration): boolean {
+  return fn.getDescendantsOfKind(SyntaxKind.BinaryExpression).some((node) => {
+    if (!isPlainAssignment(node)) return false;
+    const left = node.getLeft();
+    return Node.isIdentifier(left) && left.getText() === '$scope' && resolvesToParam(left, scopeParam);
+  });
 }
 
 interface RawMatch {
@@ -148,14 +159,20 @@ export function transformScopeAssignmentToClassProperty(sourceText: string): Cod
   for (const match of rawMatches) {
     const { className, fn } = match;
 
-    if (!fn.getParameters().some((p) => p.getName() === '$scope')) continue;
+    const scopeParam = fn.getParameters().find((p) => p.getName() === '$scope');
+    if (!scopeParam) continue;
 
-    const assignments = findScopeAssignments(fn);
+    const assignments = findScopeAssignments(fn, scopeParam);
     if (assignments.length === 0) continue;
 
-    if (assignments.some((assignment) => isUnsafeNestedAssignment(assignment, fn))) {
+    if (isReassigned(fn, scopeParam)) {
+      skipReasons.push(`${className}: $scope is reassigned within the function, not safely transformable`);
+      continue;
+    }
+
+    if (assignments.some(({ assignment }) => isInsideThisRebindingBoundary(assignment, fn))) {
       skipReasons.push(
-        `${className}: a $scope property assignment is inside a nested function, not safely transformable — this would not refer to the class instance there, and/or $scope may be shadowed`
+        `${className}: a $scope property assignment is inside a nested function or accessor, not safely transformable — this would not refer to the class instance there`
       );
       continue;
     }

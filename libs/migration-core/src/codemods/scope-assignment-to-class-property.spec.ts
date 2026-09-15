@@ -95,11 +95,13 @@ describe('transformScopeAssignmentToClassProperty', () => {
     });
   });
 
-  it('skips a controller whose $scope is shadowed by a nested function parameter', () => {
-    // A real, documented miss: the $scope.x = 1 inside the $watch
-    // callback below refers to a *different*, shadowed $scope, not the
-    // outer controller's own injected one — rewriting it to `this.x = 1`
-    // would silently change which scope gets mutated.
+  it('reports no match for a $scope.x = y that only exists inside a nested function shadowing $scope as its own parameter', () => {
+    // Not a skip -- there genuinely is nothing for this pattern to do.
+    // Binding resolution (not text/ancestor matching) correctly
+    // recognizes the inner $scope.x = 1 refers to the $watch callback's
+    // own shadowed `$scope` parameter, a completely different variable
+    // than the controller's injected one, so it's excluded from the
+    // candidate set entirely rather than transformed or flagged.
     const before = [
       "angular.module('app').controller('MainCtrl', function ($scope) {",
       "  $scope.$watch('x', function (newVal, oldVal, $scope) {",
@@ -112,8 +114,37 @@ describe('transformScopeAssignmentToClassProperty', () => {
 
     expect(result).toEqual({
       matched: false,
-      reason: "MainCtrl: a $scope property assignment is inside a nested function, not safely transformable — this would not refer to the class instance there, and/or $scope may be shadowed",
+      reason: 'no bare-function controller with a $scope property assignment found',
     });
+  });
+
+  it('leaves a $scope.x = y shadowed by a nested var declaration untouched, while still transforming an unshadowed sibling', () => {
+    // A real bug caught by actually running this codemod, before it even
+    // reached adversarial review: a hand-rolled ancestor walk that only
+    // checked nested-function *parameters* missed this entirely and
+    // silently rewrote the inner (shadowed) assignment to `this.loaded`,
+    // which would have set a property on the class instance instead of
+    // on the local `fetchSnapshot()` result the original code actually
+    // targeted. Real symbol resolution correctly tells the two `$scope`s
+    // apart: the outer assignment (which does resolve to the injected
+    // $scope) gets transformed, the inner one (a completely different
+    // binding) is left exactly as written.
+    const before = [
+      "angular.module('app').controller('MainCtrl', function ($scope) {",
+      '  $scope.refresh = function () {',
+      '    var $scope = fetchSnapshot();',
+      '    $scope.loaded = true;',
+      '  };',
+      '});',
+    ].join('\n');
+
+    const result = transformScopeAssignmentToClassProperty(before);
+
+    assertMatched(result);
+    expect(result.output).toContain('this.refresh = function () {');
+    expect(result.output).toContain('var $scope = fetchSnapshot();');
+    expect(result.output).toContain('$scope.loaded = true;');
+    expect(result.output).not.toContain('this.loaded');
   });
 
   it('skips a controller whose $scope assignment is inside a nested plain (non-arrow) function, even without shadowing', () => {
@@ -136,8 +167,63 @@ describe('transformScopeAssignmentToClassProperty', () => {
 
     expect(result).toEqual({
       matched: false,
-      reason: "MainCtrl: a $scope property assignment is inside a nested function, not safely transformable — this would not refer to the class instance there, and/or $scope may be shadowed",
+      reason: "MainCtrl: a $scope property assignment is inside a nested function or accessor, not safely transformable — this would not refer to the class instance there",
     });
+  });
+
+  it('skips a controller whose $scope assignment is inside a getter, since accessors rebind this too', () => {
+    // The nested-function boundary check originally enumerated only
+    // FunctionExpression/ArrowFunction/FunctionDeclaration/
+    // MethodDeclaration and missed accessor declarations -- a getter's
+    // `this` is bound by how it's accessed, exactly like a plain
+    // function, not lexically.
+    const before = [
+      "angular.module('app').controller('MainCtrl', function ($scope) {",
+      "  Object.defineProperty($scope, 'computed', { get foo() { $scope.x = 1; } });",
+      '});',
+    ].join('\n');
+
+    const result = transformScopeAssignmentToClassProperty(before);
+
+    expect(result).toEqual({
+      matched: false,
+      reason: "MainCtrl: a $scope property assignment is inside a nested function or accessor, not safely transformable — this would not refer to the class instance there",
+    });
+  });
+
+  it('skips a controller whose $scope is reassigned as a bare identifier', () => {
+    // A real, documented miss: $scope = $scope.$new() doesn't change
+    // which declaration `$scope` resolves to (still the same parameter),
+    // so symbol resolution alone wouldn't catch this -- but the runtime
+    // value has changed, so a later `$scope.x = 1` would silently mutate
+    // whatever $scope now holds, not the originally-injected value the
+    // class constructor captures.
+    const before = [
+      "angular.module('app').controller('MainCtrl', function ($scope) {",
+      '  $scope = $scope.$new();',
+      '  $scope.x = 1;',
+      '});',
+    ].join('\n');
+
+    const result = transformScopeAssignmentToClassProperty(before);
+
+    expect(result).toEqual({
+      matched: false,
+      reason: 'MainCtrl: $scope is reassigned within the function, not safely transformable',
+    });
+  });
+
+  it('transforms the LHS of $scope.x = $scope.y + 1 but leaves the RHS reference as-is', () => {
+    // Documented, intentional, correct behavior, not a bug: $scope stays
+    // a constructor parameter regardless, so the untouched RHS $scope.y
+    // continues to work exactly as before -- an incomplete migration of
+    // that one reference, not a wrong one.
+    const before = "angular.module('app').controller('MainCtrl', function ($scope) { $scope.x = $scope.y + 1; });";
+
+    const result = transformScopeAssignmentToClassProperty(before);
+
+    assertMatched(result);
+    expect(result.output).toContain('this.x = $scope.y + 1;');
   });
 
   it('safely transforms a $scope assignment inside a nested arrow function, since arrows do not rebind this', () => {
@@ -195,6 +281,35 @@ describe('transformScopeAssignmentToClassProperty', () => {
     const classIndex = result.output.indexOf('class MainCtrl {');
     expect(classIndex).toBeGreaterThan(iifeOpenIndex);
     expect(result.output).toContain('this.x = helper + 1;');
+  });
+
+  it('reports no match for a computed-property $scope assignment, not this pattern\'s shape', () => {
+    const before = "angular.module('app').controller('MainCtrl', function ($scope) { $scope['x'] = 1; });";
+
+    const result = transformScopeAssignmentToClassProperty(before);
+
+    expect(result).toEqual({
+      matched: false,
+      reason: 'no bare-function controller with a $scope property assignment found',
+    });
+  });
+
+  it('preserves source order when two controllers are chained in one statement', () => {
+    const before = [
+      "angular.module('app')",
+      "  .controller('A', function ($scope) { $scope.a = 1; })",
+      "  .controller('B', function ($scope) { $scope.b = 2; });",
+    ].join('\n');
+
+    const result = transformScopeAssignmentToClassProperty(before);
+
+    assertMatched(result);
+    const indexA = result.output.indexOf('class A {');
+    const indexB = result.output.indexOf('class B {');
+    expect(indexA).toBeGreaterThanOrEqual(0);
+    expect(indexA).toBeLessThan(indexB);
+    expect(result.output).toContain(".controller('A', A)");
+    expect(result.output).toContain(".controller('B', B)");
   });
 
   it('transforms one controller and surfaces a sibling skip as a warning', () => {
