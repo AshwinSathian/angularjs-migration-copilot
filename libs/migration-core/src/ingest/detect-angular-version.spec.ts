@@ -65,6 +65,25 @@ describe('detectAngularVersion', () => {
     expect(await detectAngularVersion(repoRoot)).toEqual({ detected: false });
   });
 
+  it('reports the bower.json source even when its declared version is an empty string', async () => {
+    // A presence check, not a truthy check: an empty-string version is a
+    // real, if degenerate, declared dependency — falling through to
+    // package.json here would misattribute the source.
+    await writeFile(
+      join(repoRoot, 'bower.json'),
+      JSON.stringify({ dependencies: { angular: '' } })
+    );
+    await writeFile(
+      join(repoRoot, 'package.json'),
+      JSON.stringify({ dependencies: { angular: '1.6.9' } })
+    );
+    expect(await detectAngularVersion(repoRoot)).toEqual({
+      detected: true,
+      version: '',
+      source: 'bower.json',
+    });
+  });
+
   it('reports not detected on a malformed JSON manifest rather than throwing', async () => {
     await writeFile(join(repoRoot, 'package.json'), '{ not valid json');
     await expect(detectAngularVersion(repoRoot)).resolves.toEqual({ detected: false });

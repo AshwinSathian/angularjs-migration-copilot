@@ -19,7 +19,7 @@ describe('detectTestRunner', () => {
     expect(await detectTestRunner(repoRoot)).toEqual({ tool: 'none', usesPhantomJs: false });
   });
 
-  it('flags a PhantomJS launcher as the expected default failure mode', async () => {
+  it('flags a PhantomJS launcher as the expected default failure mode, and surfaces the remediated config', async () => {
     const configPath = join(repoRoot, 'karma.conf.js');
     await writeFile(
       configPath,
@@ -29,6 +29,9 @@ describe('detectTestRunner', () => {
     expect(result.tool).toBe('karma');
     expect(result.usesPhantomJs).toBe(true);
     expect(result.configPath).toBe(configPath);
+    expect(result.remediatedConfig).toBe(
+      "module.exports = function (config) { config.set({ browsers: ['ChromeHeadless'] }); };"
+    );
   });
 
   it('does not flag a config using a modern launcher', async () => {
@@ -47,6 +50,11 @@ describe('detectTestRunner', () => {
     await writeFile(configPath, "config.set({ browsers: ['PhantomJS'] });");
 
     const result = await detectTestRunner(repoRoot);
-    expect(result).toEqual({ tool: 'karma', configPath, usesPhantomJs: true });
+    expect(result).toEqual({
+      tool: 'karma',
+      configPath,
+      usesPhantomJs: true,
+      remediatedConfig: "config.set({ browsers: ['ChromeHeadless'] });",
+    });
   });
 });

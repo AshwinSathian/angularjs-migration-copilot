@@ -3,7 +3,17 @@ import fg from 'fast-glob';
 import { scanForSecrets } from 'secrets-scan';
 
 const SECRET_SCAN_GLOBS = ['**/*.js', '**/*.json', '**/.env*', '**/*.html'];
-const SECRET_SCAN_IGNORE = ['**/node_modules/**', '**/bower_components/**', '**/dist/**'];
+const SECRET_SCAN_IGNORE = [
+  '**/node_modules/**',
+  '**/bower_components/**',
+  '**/dist/**',
+  '**/*.min.js',
+  // `dot: true` below (needed to match .env*) also makes fast-glob descend
+  // into .git — a real repo's object store can be huge and is never
+  // useful to scan here, so it's excluded explicitly rather than relying
+  // on the extension filters alone to make that traversal cheap.
+  '**/.git/**',
+];
 
 /**
  * Runs the Stage 0 redaction scan (docs/product-spec.md §6.1) across every
@@ -20,15 +30,16 @@ export async function scanRepoForSecrets(repoRoot: string): Promise<number> {
     dot: true,
   });
 
-  let total = 0;
-  for (const file of files) {
-    let content: string;
-    try {
-      content = await readFile(file, 'utf8');
-    } catch {
-      continue; // binary file the glob shouldn't have matched, or a race with a deleted file
-    }
-    total += scanForSecrets(content).findings.length;
-  }
-  return total;
+  const counts = await Promise.all(
+    files.map(async (file) => {
+      try {
+        const content = await readFile(file, 'utf8');
+        return scanForSecrets(content).findings.length;
+      } catch {
+        return 0; // binary file the glob shouldn't have matched, or a race with a deleted file
+      }
+    })
+  );
+
+  return counts.reduce((total, count) => total + count, 0);
 }

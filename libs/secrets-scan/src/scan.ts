@@ -20,6 +20,14 @@ export interface RedactResult extends ScanResult {
   readonly redacted: string;
 }
 
+interface Match {
+  readonly patternId: string;
+  readonly description: string;
+  readonly start: number;
+  readonly end: number;
+  readonly secret: string;
+}
+
 function lineNumberAt(content: string, index: number): number {
   let line = 1;
   for (let i = 0; i < index; i++) {
@@ -34,12 +42,21 @@ function preview(secret: string): string {
 }
 
 /**
- * Scans `content` for credential-shaped patterns without modifying it.
- * Use this for reporting; use `redact` when the content is about to be
- * sent somewhere external (an LLM prompt, a log line).
+ * Finds every credential-shaped match across all patterns in one pass,
+ * keeping only the first (by `SECRET_PATTERNS` order) match for any given
+ * character range. Some patterns legitimately overlap on the same input —
+ * `API_KEY="..."` matches both `generic-api-key-assignment` (the quoted
+ * value) and `env-style-secret-line` (the whole `KEY=value` line, which
+ * for a quoted value also spans the value) — and without this, one real
+ * secret gets reported and redacted twice under two different pattern IDs,
+ * with the second pass re-redacting the first's already-redacted marker.
  */
-export function scanForSecrets(content: string): ScanResult {
-  const findings: SecretFinding[] = [];
+function findMatches(content: string): Match[] {
+  const matches: Match[] = [];
+
+  function overlapsExisting(start: number, end: number): boolean {
+    return matches.some((m) => start < m.end && end > m.start);
+  }
 
   for (const pattern of SECRET_PATTERNS) {
     // Each pattern's regex carries its own `lastIndex` state across calls
@@ -50,19 +67,31 @@ export function scanForSecrets(content: string): ScanResult {
       const groupIndex = pattern.redactGroup ?? 0;
       const secret = match[groupIndex];
       if (!secret) continue;
-      const offset = match[0].indexOf(secret);
-      const absoluteIndex = (match.index ?? 0) + Math.max(offset, 0);
+      const offsetInMatch = match[0].indexOf(secret);
+      const start = (match.index ?? 0) + Math.max(offsetInMatch, 0);
+      const end = start + secret.length;
+      if (overlapsExisting(start, end)) continue;
 
-      findings.push({
-        patternId: pattern.id,
-        description: pattern.description,
-        line: lineNumberAt(content, absoluteIndex),
-        redactedPreview: preview(secret),
-      });
+      matches.push({ patternId: pattern.id, description: pattern.description, start, end, secret });
     }
   }
 
-  findings.sort((a, b) => a.line - b.line);
+  return matches.sort((a, b) => a.start - b.start);
+}
+
+/**
+ * Scans `content` for credential-shaped patterns without modifying it.
+ * Use this for reporting; use `redact` when the content is about to be
+ * sent somewhere external (an LLM prompt, a log line).
+ */
+export function scanForSecrets(content: string): ScanResult {
+  const findings = findMatches(content).map((m) => ({
+    patternId: m.patternId,
+    description: m.description,
+    line: lineNumberAt(content, m.start),
+    redactedPreview: preview(m.secret),
+  }));
+
   return { findings, hasSecrets: findings.length > 0 };
 }
 
@@ -73,19 +102,23 @@ export function scanForSecrets(content: string): ScanResult {
  * docs/product-spec.md §6.1. Applies regardless of CLI vs. hosted mode.
  */
 export function redact(content: string): RedactResult {
-  let redacted = content;
+  const matches = findMatches(content); // sorted by start, non-overlapping
 
-  for (const pattern of SECRET_PATTERNS) {
-    pattern.regex.lastIndex = 0;
-    redacted = redacted.replace(pattern.regex, (fullMatch, ...rest) => {
-      const groups = rest.slice(0, -2); // matchAll/replace pass (offset, string) last
-      const groupIndex = pattern.redactGroup ?? 0;
-      const secret = groupIndex === 0 ? fullMatch : groups[groupIndex - 1];
-      if (!secret) return fullMatch;
-      return fullMatch.replace(secret, `[REDACTED:${pattern.id}]`);
-    });
+  let redacted = '';
+  let cursor = 0;
+  for (const match of matches) {
+    redacted += content.slice(cursor, match.start);
+    redacted += `[REDACTED:${match.patternId}]`;
+    cursor = match.end;
   }
+  redacted += content.slice(cursor);
 
-  const scan = scanForSecrets(content);
-  return { ...scan, redacted };
+  const findings = matches.map((m) => ({
+    patternId: m.patternId,
+    description: m.description,
+    line: lineNumberAt(content, m.start),
+    redactedPreview: preview(m.secret),
+  }));
+
+  return { findings, hasSecrets: findings.length > 0, redacted };
 }

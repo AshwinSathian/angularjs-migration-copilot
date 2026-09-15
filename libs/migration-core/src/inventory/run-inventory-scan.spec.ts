@@ -74,10 +74,38 @@ describe('runInventoryScan', () => {
     ]);
   });
 
+  it('skips vendored AngularJS framework source, identified by its official license banner', async () => {
+    // A real finding from running this scanner against the pinned
+    // angular-phonecat fixture after installing its dependencies: its own
+    // build step copies angular.js, angular-route.js, etc. into app/lib/,
+    // and without this filter their internal $compile/$animate/ngView
+    // registrations get reported as if they were the app's own code.
+    await mkdir(join(repoRoot, 'lib'));
+    await writeFile(
+      join(repoRoot, 'lib', 'angular.js'),
+      [
+        '/**',
+        ' * @license AngularJS v1.8.0',
+        ' * (c) 2010-2020 Google, Inc. http://angularjs.org',
+        ' * License: MIT',
+        ' */',
+        "angular.module('ngRoute', []).provider('$route', function () {});",
+      ].join('\n')
+    );
+    await writeFile(join(repoRoot, 'app.js'), `angular.module('real-app', []);`);
+
+    const report = await runInventoryScan(repoRoot);
+
+    expect(report.filesScanned).toBe(1);
+    expect(report.vendoredFilesSkipped).toBe(1);
+    expect(report.modules).toEqual([expect.objectContaining({ name: 'real-app' })]);
+  });
+
   it('returns an empty report for a repo with no matching files', async () => {
     const report = await runInventoryScan(repoRoot);
     expect(report).toMatchObject({
       filesScanned: 0,
+      vendoredFilesSkipped: 0,
       modules: [],
       registrations: [],
       routes: [],

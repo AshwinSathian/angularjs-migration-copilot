@@ -43,7 +43,7 @@ npx nx run migration-core:build
 node libs/migration-core/dist/cli.js inventory ./path/to/an/angularjs/repo
 ```
 
-which detects the AngularJS version, build tooling, and test runner, runs the Stage 0 secrets scan, and prints a JSON dependency graph of every controller, directive, service, factory, filter, `.component()`, route, and `$watch` usage it finds. No transforms happen yet — it's report-only, by design (see [docs/milestones/m0-inventory.md](docs/milestones/m0-inventory.md)).
+which detects the AngularJS version, build tooling, and test runner, runs the Stage 0 secrets scan, and prints a JSON dependency graph of every controller, directive, component, service, factory, provider, value, constant, filter, decorator, animation, route, and `$watch` usage it finds — while excluding any vendored AngularJS framework source it comes across, so the framework's own internals never get reported as if they were your app. No transforms happen yet — it's report-only, by design (see [docs/milestones/m0-inventory.md](docs/milestones/m0-inventory.md)).
 
 Once M1 lands, the eventual local CLI usage will look like:
 

@@ -30,6 +30,23 @@ describe('scanRepoForSecrets', () => {
     expect(await scanRepoForSecrets(repoRoot)).toBe(0);
   });
 
+  it('does not scan minified vendor bundles', async () => {
+    await writeFile(
+      join(repoRoot, 'jquery.min.js'),
+      'const key="AKIAABCDEFGHIJKLMNOP";' // a real minified file has no line breaks to hide behind
+    );
+    expect(await scanRepoForSecrets(repoRoot)).toBe(0);
+  });
+
+  it('does not descend into .git, even though dot-files are otherwise matched', async () => {
+    await mkdir(join(repoRoot, '.git', 'objects'), { recursive: true });
+    await writeFile(
+      join(repoRoot, '.git', 'objects', 'leaked.json'),
+      '{"key": "AKIAABCDEFGHIJKLMNOP"}'
+    );
+    expect(await scanRepoForSecrets(repoRoot)).toBe(0);
+  });
+
   it('does not scan node_modules or bower_components', async () => {
     await mkdir(join(repoRoot, 'node_modules'), { recursive: true });
     await writeFile(

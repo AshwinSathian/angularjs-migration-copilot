@@ -18,6 +18,13 @@ export interface TestRunnerDetection {
    * ingest's.
    */
   readonly usesPhantomJs: boolean;
+  /**
+   * The config text with PhantomJS swapped for ChromeHeadless, present
+   * only when `usesPhantomJs` is true. Generated, not applied or executed
+   * — see `remediateKarmaConfig`'s doc comment for exactly what this
+   * does and doesn't prove.
+   */
+  readonly remediatedConfig?: string;
 }
 
 export interface IngestReport {

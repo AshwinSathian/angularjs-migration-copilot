@@ -1,5 +1,4 @@
 export { runInventoryScan } from './run-inventory-scan.js';
-export type { RunInventoryScanOptions } from './run-inventory-scan.js';
 export type {
   InventoryReport,
   ModuleDeclaration,
@@ -8,3 +7,4 @@ export type {
   RouteEntry,
   WatchUsage,
 } from './types.js';
+export { REGISTRATION_KINDS, WATCH_METHODS } from './types.js';

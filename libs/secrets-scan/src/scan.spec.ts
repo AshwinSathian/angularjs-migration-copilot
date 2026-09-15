@@ -67,6 +67,16 @@ describe('scanForSecrets', () => {
     const result = scanForSecrets(source);
     expect(result.findings[0]?.line).toBe(3);
   });
+
+  it('reports one finding, not two, when a quoted KEY=value line matches two patterns', () => {
+    // 'API_KEY="..."' matches generic-api-key-assignment (the quoted value)
+    // AND env-style-secret-line (the whole KEY=value line) — these are the
+    // same real secret found by two independently-reasonable patterns, not
+    // two secrets. Whichever pattern is earlier in SECRET_PATTERNS wins;
+    // the point of this test is exactly-one, not which one.
+    const result = scanForSecrets('API_KEY="abcdefghijklmnop1234"');
+    expect(result.findings).toHaveLength(1);
+  });
 });
 
 describe('redact', () => {
@@ -100,5 +110,15 @@ describe('redact', () => {
     const once = redact(source).redacted;
     const twice = redact(once).redacted;
     expect(twice).toBe(once);
+  });
+
+  it('redacts an overlapping double-pattern match exactly once', () => {
+    // Same scenario as the scanForSecrets test above: without overlap
+    // dedup, generic-api-key-assignment's replace pass redacts the value
+    // first, then env-style-secret-line's pass matches the *already
+    // redacted* placeholder text and redacts it a second time.
+    const result = redact('API_KEY="abcdefghijklmnop1234"');
+    expect(result.findings).toHaveLength(1);
+    expect(result.redacted).toMatch(/^API_KEY="\[REDACTED:[a-z-]+\]"$/);
   });
 });

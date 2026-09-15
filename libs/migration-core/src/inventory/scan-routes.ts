@@ -1,4 +1,5 @@
 import { Node, type Project } from 'ts-morph';
+import { forEachPropertyAccessCall, methodCallLine, sortByFileThenLine } from './ast-helpers.js';
 import type { RouteEntry } from './types.js';
 
 /**
@@ -7,47 +8,46 @@ import type { RouteEntry } from './types.js';
  * the receiver's source text mentions the provider name, which is robust
  * to chaining (`$routeProvider.when(...).when(...)`) since every link in
  * that chain's text still includes the original `$routeProvider` token.
+ *
+ * Known limitation: this is a text match on the receiver, not identifier
+ * resolution. A config function that aliases the injected provider to a
+ * different local name — `function (rp) { rp.when('/x', {...}) }` — won't
+ * be recognized, since `rp` never appears alongside the literal substring
+ * `$routeProvider`. Real-world AngularJS code overwhelmingly keeps DI
+ * parameter names matching the injected token (renaming them actively
+ * fights the style every AngularJS linter/guide recommends), so this is a
+ * deliberate, documented scope line rather than a silent gap — resolving
+ * it properly would mean tracing the identifier back through the enclosing
+ * function's parameter list to confirm it's bound to the injected
+ * `$routeProvider`/`$stateProvider`, a meaningfully larger analysis for a
+ * pattern that's rare in practice.
  */
 export function scanRoutes(project: Project): RouteEntry[] {
   const routes: RouteEntry[] = [];
 
-  for (const sourceFile of project.getSourceFiles()) {
-    sourceFile.forEachDescendant((node) => {
-      if (!Node.isCallExpression(node)) return;
-      const expression = node.getExpression();
-      if (!Node.isPropertyAccessExpression(expression)) return;
+  forEachPropertyAccessCall(project, (call, expression, sourceFile) => {
+    const methodName = expression.getName();
+    if (methodName !== 'when' && methodName !== 'state') return;
 
-      const methodName = expression.getName();
-      if (methodName !== 'when' && methodName !== 'state') return;
+    const receiverText = expression.getExpression().getText();
+    const isNgRoute = methodName === 'when' && /\$routeProvider/.test(receiverText);
+    const isUiRouter = methodName === 'state' && /\$stateProvider/.test(receiverText);
+    if (!isNgRoute && !isUiRouter) return;
 
-      const receiverText = expression.getExpression().getText();
-      const isNgRoute = methodName === 'when' && /\$routeProvider/.test(receiverText);
-      const isUiRouter = methodName === 'state' && /\$stateProvider/.test(receiverText);
-      if (!isNgRoute && !isUiRouter) return;
+    const [pathOrNameArg] = call.getArguments();
+    const pathOrStateName = pathOrNameArg
+      ? Node.isStringLiteral(pathOrNameArg)
+        ? pathOrNameArg.getLiteralText()
+        : pathOrNameArg.getText()
+      : '';
 
-      const [pathOrNameArg] = node.getArguments();
-      const pathOrStateName = pathOrNameArg
-        ? Node.isStringLiteral(pathOrNameArg)
-          ? pathOrNameArg.getLiteralText()
-          : pathOrNameArg.getText()
-        : '';
-
-      routes.push({
-        provider: isNgRoute ? 'ngRoute' : 'ui-router',
-        pathOrStateName,
-        filePath: sourceFile.getFilePath(),
-        // The `.when`/`.state` token's own line, not the whole call
-        // expression's — for a chained `$routeProvider.when(a).when(b)`,
-        // every link in the chain shares the same expression start (back
-        // at `$routeProvider` on line 1), so using that would report every
-        // route as being on the same line.
-        line: expression.getNameNode().getStartLineNumber(),
-      });
+    routes.push({
+      provider: isNgRoute ? 'ngRoute' : 'ui-router',
+      pathOrStateName,
+      filePath: sourceFile.getFilePath(),
+      line: methodCallLine(expression),
     });
-  }
+  });
 
-  // `forEachDescendant` visits outer nodes before inner ones, so a chained
-  // `.when(a).when(b)` yields `b` before `a` — the opposite of source
-  // order. Sorting by the now-accurate per-call line restores it.
-  return routes.sort((a, b) => a.line - b.line);
+  return sortByFileThenLine(routes);
 }

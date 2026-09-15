@@ -28,13 +28,16 @@ function angularVersionFrom(manifest: Record<string, unknown> | undefined): stri
 export async function detectAngularVersion(repoRoot: string): Promise<AngularVersionDetection> {
   const bower = await readJsonIfExists(join(repoRoot, 'bower.json'));
   const bowerVersion = angularVersionFrom(bower);
-  if (bowerVersion) {
+  // Presence check, not a truthy check: `"angular": ""` is a real, if
+  // degenerate, declared dependency and should still win over falling
+  // through to package.json — a truthy check would silently discard it.
+  if (bowerVersion !== undefined) {
     return { detected: true, version: bowerVersion, source: 'bower.json' };
   }
 
   const pkg = await readJsonIfExists(join(repoRoot, 'package.json'));
   const pkgVersion = angularVersionFrom(pkg);
-  if (pkgVersion) {
+  if (pkgVersion !== undefined) {
     return { detected: true, version: pkgVersion, source: 'package.json' };
   }
 

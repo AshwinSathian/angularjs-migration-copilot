@@ -67,6 +67,19 @@ describe('scanRegistrations', () => {
     expect(entry?.dependencies).toEqual(['$scope']);
   });
 
+  it('extracts a component with an ES6 shorthand-method controller', () => {
+    // { controller($scope) {...} } is a MethodDeclaration, not a
+    // PropertyAssignment with a function initializer — a distinct AST
+    // shape common in AngularJS 1.5+ code written after ES6 became normal.
+    const project = projectWithSource(`
+      angular.module('app').component('widget', {
+        controller($scope, MyService) { this.x = $scope; }
+      });
+    `);
+    const [entry] = scanRegistrations(project);
+    expect(entry?.dependencies).toEqual(['$scope', 'MyService']);
+  });
+
   it('reports no dependencies for a component with a string-named controller', () => {
     const project = projectWithSource(`
       angular.module('app').component('widget', { controller: 'WidgetController' });
@@ -78,6 +91,27 @@ describe('scanRegistrations', () => {
   it('reports no dependencies for a component with no controller at all', () => {
     const project = projectWithSource(`
       angular.module('app').component('widget', { template: '<div></div>' });
+    `);
+    const [entry] = scanRegistrations(project);
+    expect(entry?.dependencies).toEqual([]);
+  });
+
+  it('finds value, constant, provider, decorator, and animation registrations', () => {
+    const project = projectWithSource(`
+      angular.module('app')
+        .value('AppSettings', { debug: true })
+        .constant('CONFIG_KEY', 'x')
+        .provider('myThing', function () {})
+        .decorator('$log', function ($delegate) { return $delegate; })
+        .animation('.fade', function () { return {}; });
+    `);
+    const kinds = scanRegistrations(project).map((e) => e.kind).sort();
+    expect(kinds).toEqual(['animation', 'constant', 'decorator', 'provider', 'value']);
+  });
+
+  it('reports no dependencies for a value/constant registration, since the second arg is a plain value', () => {
+    const project = projectWithSource(`
+      angular.module('app').value('AppSettings', { debug: true });
     `);
     const [entry] = scanRegistrations(project);
     expect(entry?.dependencies).toEqual([]);

@@ -5,7 +5,9 @@ title = "gitleaks config for angularjs-migration-copilot"
 useDefault = true
 
 [allowlist]
-description = "libs/secrets-scan's own tests exercise the detector with deliberately fake, syntactically-valid secrets. Real credentials must never live in a spec file regardless of this allowlist — see CONTRIBUTING.md."
+description = "Exact test files that deliberately embed fake, syntactically-valid secrets to exercise libs/secrets-scan's detector. Scoped to these paths specifically, not a repo-wide '*.spec.ts' exemption — a real credential accidentally pasted into any OTHER spec file must still be caught. Real credentials must never live in any spec file regardless of this allowlist; see CONTRIBUTING.md."
 paths = [
-  '''.*\.spec\.ts$''',
+  '''^libs/secrets-scan/src/scan\.spec\.ts$''',
+  '''^libs/migration-core/src/ingest/scan-repo-for-secrets\.spec\.ts$''',
+  '''^libs/migration-core/src/ingest/run-ingest\.spec\.ts$''',
 ]
