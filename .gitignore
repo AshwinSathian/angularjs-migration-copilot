@@ -4,6 +4,9 @@ tmp/
 out-tsc/
 .nx/cache/
 .nx/workspace-data/
+.nx/polygraph/
+.nx/self-healing/
+.nx/migrate-runs/
 coverage/
 *.log
 .env
@@ -14,3 +17,5 @@ coverage/
 .vscode/*
 !.vscode/extensions.json
 .idea/
+
+vitest.config.*.timestamp*

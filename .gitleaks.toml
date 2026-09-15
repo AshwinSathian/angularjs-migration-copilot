@@ -1,0 +1,13 @@
+title = "gitleaks config for angularjs-migration-copilot"
+
+# Extend, don't replace, gitleaks' default ruleset.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Exact test files that deliberately embed fake, syntactically-valid secrets to exercise libs/secrets-scan's detector. Scoped to these paths specifically, not a repo-wide '*.spec.ts' exemption — a real credential accidentally pasted into any OTHER spec file must still be caught. Real credentials must never live in any spec file regardless of this allowlist; see CONTRIBUTING.md."
+paths = [
+  '''^libs/secrets-scan/src/scan\.spec\.ts$''',
+  '''^libs/migration-core/src/ingest/scan-repo-for-secrets\.spec\.ts$''',
+  '''^libs/migration-core/src/ingest/run-ingest\.spec\.ts$''',
+]

@@ -90,7 +90,7 @@ Migration Core is a standalone CLI/library with no dependency on NestJS, Angular
 
 ### 6.2 Stage 1 — Inventory
 
-- Full AST scan (ts-morph, ng-morph) producing a dependency graph: controllers, directives, services and factories, filters, route definitions, `$scope.$watch` usage.
+- Full AST scan (ts-morph, ng-morph) producing a dependency graph: controllers, directives, services and factories, filters, `.component()` registrations (AngularJS 1.5+), route definitions, `$scope.$watch` usage. `.component()` isn't a separate codemod target from `.directive()` — see §6.3 pattern #4 — but Stage 1 has to recognize it as its own registration form, since a codebase written against the 1.5+ idiom (the project's own `angular-phonecat` baseline fixture among them) can use it exclusively and have zero bare `.controller()`/`.directive()` calls to find.
 - Shippable as a standalone milestone (M0): report-only, no transforms.
 
 ### 6.2a Stage 1.5 — Target workspace scaffold
