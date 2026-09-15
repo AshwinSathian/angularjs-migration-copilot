@@ -70,10 +70,27 @@ export function constructorParamsText(fn: WrappableFunction): string {
   return fn.getParameters().map((p) => `private ${p.getName()}: any`).join(', ');
 }
 
-/** An arrow function's concise (non-block) body is wrapped in `{ return ...; }` since a constructor body must be a block. */
-export function functionBodyText(fn: WrappableFunction): string {
+/**
+ * An arrow function's concise (non-block) body is wrapped in
+ * `{ return ...; }` since a constructor body must be a block.
+ * `internalEdits` (positions in the *full source file*'s coordinates, as
+ * every other position this module deals in) let a caller rewrite text
+ * inside the body — e.g. pattern #1 replacing a `$scope` reference with
+ * `this` — without having to separately account for the concise-body
+ * wrapper prefix shifting every offset.
+ */
+export function functionBodyText(fn: WrappableFunction, internalEdits: readonly PositionEdit[] = []): string {
   const body = fn.getBody();
-  return Node.isBlock(body) ? body.getText() : `{ return ${body.getText()}; }`;
+  const bodyStart = body.getStart();
+  const rawText = body.getText();
+  const editedText = internalEdits.length === 0
+    ? rawText
+    : applyEdits(
+        rawText,
+        internalEdits.map((e) => ({ pos: e.pos - bodyStart, end: e.end - bodyStart, replacement: e.replacement }))
+      );
+
+  return Node.isBlock(body) ? editedText : `{ return ${editedText}; }`;
 }
 
 export function buildClassText(className: string, params: string, bodyText: string): string {

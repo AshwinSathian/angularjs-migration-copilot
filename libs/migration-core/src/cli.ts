@@ -2,13 +2,18 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { Command } from 'commander';
-import { transformArrayStyleDiToConstructor, type CodemodResult } from './codemods/index.js';
+import {
+  transformArrayStyleDiToConstructor,
+  transformScopeAssignmentToClassProperty,
+  type CodemodResult,
+} from './codemods/index.js';
 import { runIngest } from './ingest/index.js';
 import { runInventoryScan } from './inventory/index.js';
 import { scaffoldTargetWorkspace, verifyWorkspaceBuilds } from './scaffold/index.js';
 
 const CODEMODS: Record<string, (sourceText: string) => CodemodResult> = {
   'array-di-to-constructor': transformArrayStyleDiToConstructor,
+  'scope-assignment-to-class-property': transformScopeAssignmentToClassProperty,
 };
 
 const program = new Command();
