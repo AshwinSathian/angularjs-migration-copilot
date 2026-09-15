@@ -1,4 +1,5 @@
 import { runCommand } from './run-command.js';
+import { commandSucceeded } from './types.js';
 import type { BuildVerificationResult } from './types.js';
 
 /**
@@ -10,5 +11,5 @@ import type { BuildVerificationResult } from './types.js';
  */
 export async function verifyWorkspaceBuilds(workspaceDir: string): Promise<BuildVerificationResult> {
   const result = await runCommand('npx', ['ng', 'build'], { cwd: workspaceDir });
-  return { ...result, success: result.exitCode === 0 };
+  return { ...result, success: commandSucceeded(result) };
 }

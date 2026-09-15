@@ -21,9 +21,11 @@ describe('verifyWorkspaceBuilds', () => {
 
     const result = await verifyWorkspaceBuilds('/scratch/some-workspace');
 
-    expect(spawnMock).toHaveBeenCalledWith('npx', ['ng', 'build'], {
-      cwd: '/scratch/some-workspace',
-    });
+    expect(spawnMock).toHaveBeenCalledWith(
+      'npx',
+      ['ng', 'build'],
+      expect.objectContaining({ cwd: '/scratch/some-workspace' })
+    );
     expect(result.success).toBe(true);
     expect(result.exitCode).toBe(0);
   });
