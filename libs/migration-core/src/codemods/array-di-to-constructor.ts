@@ -9,19 +9,14 @@ import type { CodemodResult } from './types.js';
  * constructor. `.directive`/`.component` nest their controller inside a
  * config object (pattern #4's job), `.provider` has `$get` semantics
  * beyond a plain constructor, and `.filter`/`.value`/`.constant` don't fit
- * this shape at all. Scoping decision recorded in docs/decisions.md.
+ * this shape at all. Scoping decision recorded in docs/decisions.md
+ * (ADR-024).
  */
 const TRANSFORMABLE_KINDS = new Set(['controller', 'service', 'factory']);
 
 const VALID_IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
 type DiFunction = FunctionExpression | ArrowFunction;
-
-interface Edit {
-  readonly pos: number;
-  readonly end: number;
-  readonly replacement: string;
-}
 
 interface Candidate {
   readonly className: string;
@@ -38,6 +33,19 @@ function topLevelStatementStart(node: Node): number {
     if (!parent || Node.isSourceFile(parent)) return current.getStart();
     current = parent;
   }
+}
+
+/**
+ * A parameter this codemod can safely carry into a constructor signature
+ * as `private <name>: any` — a plain identifier, no default value, no
+ * rest. A destructured (`{ $scope }`) or default-valued (`$scope = null`)
+ * parameter can't be represented that way without either producing
+ * invalid TypeScript (a binding pattern can't be a parameter property) or
+ * silently dropping the default — so a function with any such parameter
+ * is skipped rather than mistranslated.
+ */
+function isSimpleParameter(param: { getNameNode: () => Node; hasInitializer: () => boolean; isRestParameter: () => boolean }): boolean {
+  return Node.isIdentifier(param.getNameNode()) && !param.hasInitializer() && !param.isRestParameter();
 }
 
 /**
@@ -64,6 +72,7 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
 
   const candidates: Candidate[] = [];
   const skipReasons: string[] = [];
+  const usedClassNames = new Set<string>();
 
   forEachPropertyAccessCall(project, (call, expression) => {
     const methodName = expression.getName();
@@ -73,12 +82,20 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
     if (!nameArg || !Node.isStringLiteral(nameArg)) return;
     if (!definitionArg || !Node.isArrayLiteralExpression(definitionArg)) return;
 
-    const fn = definitionArg.getElements().at(-1);
-    if (!fn || !(Node.isFunctionExpression(fn) || Node.isArrowFunction(fn))) return;
-
     const className = nameArg.getLiteralText();
+    const fn = definitionArg.getElements().at(-1);
+    if (!fn || !(Node.isFunctionExpression(fn) || Node.isArrowFunction(fn))) {
+      skipReasons.push(`${className}: array's last element is not a function — not safely transformable`);
+      return;
+    }
+
     if (!VALID_IDENTIFIER.test(className)) {
       skipReasons.push(`${className}: not a valid class identifier`);
+      return;
+    }
+
+    if (usedClassNames.has(className)) {
+      skipReasons.push(`${className}: duplicate registration name in this file — ambiguous which one to keep, not safely transformable`);
       return;
     }
 
@@ -91,6 +108,14 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
       return;
     }
 
+    if (!fn.getParameters().every(isSimpleParameter)) {
+      skipReasons.push(
+        `${className}: has a destructured, default-valued, or rest parameter — not safely transformable`
+      );
+      return;
+    }
+
+    usedClassNames.add(className);
     candidates.push({
       className,
       fn,
@@ -103,24 +128,53 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
   if (candidates.length === 0) {
     return {
       matched: false,
-      reason: skipReasons[0] ?? 'no array-style DI controller/service/factory registration found',
+      reason: skipReasons.length > 0
+        ? skipReasons.join('; ')
+        : 'no array-style DI controller/service/factory registration found',
     };
   }
 
-  const edits: Edit[] = candidates.flatMap((candidate) => [
-    {
-      pos: candidate.topStmtStart,
-      end: candidate.topStmtStart,
-      replacement: `${buildClassText(candidate.className, candidate.fn)}\n\n`,
-    },
-    { pos: candidate.arrayStart, end: candidate.arrayEnd, replacement: candidate.className },
-  ]);
-  edits.sort((a, b) => b.pos - a.pos);
+  // Array→identifier replacements are always at distinct spans, one per
+  // candidate. Class insertions can share a position — e.g. three chained
+  // `.controller(...).controller(...).controller(...)` calls all live in
+  // the same single top-level statement — so those are grouped by
+  // position and concatenated in *source* order (candidates arrive in
+  // traversal order, which for a chain visits the outermost — i.e.
+  // last-in-source — call first, per ast-helpers.ts's own documented
+  // quirk; sorting by each candidate's own array-literal position undoes
+  // that before joining). Otherwise splicing them in one at a time at an
+  // identical offset would reverse their visual order.
+  const insertionsByPos = new Map<number, { sortKey: number; text: string }[]>();
+  const replacements: { pos: number; end: number; replacement: string }[] = [];
+
+  for (const candidate of candidates) {
+    const group = insertionsByPos.get(candidate.topStmtStart) ?? [];
+    group.push({ sortKey: candidate.arrayStart, text: buildClassText(candidate.className, candidate.fn) });
+    insertionsByPos.set(candidate.topStmtStart, group);
+
+    replacements.push({
+      pos: candidate.arrayStart,
+      end: candidate.arrayEnd,
+      replacement: candidate.className,
+    });
+  }
+
+  const edits = [
+    ...[...insertionsByPos.entries()].map(([pos, group]) => ({
+      pos,
+      end: pos,
+      replacement: `${group
+        .sort((a, b) => a.sortKey - b.sortKey)
+        .map((g) => g.text)
+        .join('\n\n')}\n\n`,
+    })),
+    ...replacements,
+  ].sort((a, b) => b.pos - a.pos);
 
   let output = sourceFile.getFullText();
   for (const edit of edits) {
     output = output.slice(0, edit.pos) + edit.replacement + output.slice(edit.end);
   }
 
-  return { matched: true, output };
+  return skipReasons.length > 0 ? { matched: true, output, warnings: skipReasons } : { matched: true, output };
 }

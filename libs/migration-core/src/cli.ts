@@ -100,7 +100,8 @@ program
       return;
     }
 
-    const sourceText = await readFile(resolve(filePath), 'utf8');
+    const inputPath = resolve(filePath);
+    const sourceText = await readFile(inputPath, 'utf8');
     const result = transform(sourceText);
 
     if (!result.matched) {
@@ -109,9 +110,19 @@ program
       return;
     }
 
+    if (result.warnings?.length) {
+      console.error(`Warnings (other registrations in this file left untouched):\n${result.warnings.join('\n')}`);
+    }
+
     if (options.out) {
-      await writeFile(options.out, result.output ?? '', 'utf8');
-      console.error(`Wrote transformed file to ${options.out}`);
+      const outPath = resolve(options.out);
+      if (outPath === inputPath) {
+        console.error('Refusing to write --out over the input file — never writes back to the source repo.');
+        process.exitCode = 1;
+        return;
+      }
+      await writeFile(outPath, result.output, 'utf8');
+      console.error(`Wrote transformed file to ${outPath}`);
     } else {
       console.log(result.output);
     }
