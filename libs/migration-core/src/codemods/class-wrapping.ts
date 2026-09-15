@@ -273,8 +273,9 @@ export type BareFunctionControllerMatch =
  * Resolves `identifier` to a `function <name>(...) {...}` declaration via
  * real symbol binding, not text matching — the same rigor
  * `resolvesUniquelyTo` already applies elsewhere in these codemods.
- * Returns `undefined` for anything else a `.controller` call's second
- * argument could be an identifier reference to (an imported binding, a
+ * Returns `undefined` for anything else a bare-function `.controller` call's
+ * second argument, or an array-style-DI registration's last array element
+ * (pattern #3), could be an identifier reference to (an imported binding, a
  * `var x = function () {}`, a class, ...) — this codemod only recognizes
  * the confirmed-dominant `function` declaration shape, not every way a
  * name could resolve to something function-shaped.
@@ -290,7 +291,7 @@ export type BareFunctionControllerMatch =
  * exact idiom throughout and produced zero matches before this fix —
  * not assumed from reading the resolver logic. See ADR-030.
  */
-function resolveNamedFunctionDeclaration(identifier: Node): FunctionDeclaration | undefined {
+export function resolveNamedFunctionDeclaration(identifier: Node): FunctionDeclaration | undefined {
   if (!Node.isIdentifier(identifier)) return undefined;
   const declarations = identifier.getSymbol()?.getDeclarations() ?? [];
   const functionDeclarations = declarations.filter(Node.isFunctionDeclaration);
@@ -332,7 +333,7 @@ function resolveNamedFunctionDeclaration(identifier: Node): FunctionDeclaration 
  * than guessed at, same "skip when ambiguous" philosophy as everywhere
  * else in this module.
  */
-function findInjectAssignmentStatements(sourceFile: SourceFile, fn: FunctionDeclaration): { statement: Node; identifier: Identifier }[] {
+export function findInjectAssignmentStatements(sourceFile: SourceFile, fn: FunctionDeclaration): { statement: Node; identifier: Identifier }[] {
   const results: { statement: Node; identifier: Identifier }[] = [];
   for (const expr of sourceFile.getDescendantsOfKind(SyntaxKind.BinaryExpression)) {
     if (!isPlainAssignment(expr)) continue;
@@ -355,27 +356,45 @@ function findInjectAssignmentStatements(sourceFile: SourceFile, fn: FunctionDecl
 
 /**
  * True if `fn` has any reference other than `expectedReference` (the
- * `.controller` call's own identifier argument) and the identifiers in
- * `injectIdentifiers` (already accounted for — they're deleted alongside
- * `fn`, so their presence doesn't threaten declare-before-use safety).
- * `buildClassSpliceEdits` only guarantees the class is declared before
- * *this* call's reference — if some other code (a `.prototype` extension,
- * a second registration under another name, ...) references the same
- * function earlier in the file, deleting the function and inserting the
- * class later can still leave that other reference before the class's
- * new declaration point, resurfacing the exact `TS2449` bug this whole
- * named-declaration path exists to avoid. Confirmed by constructing a
- * `X.prototype.helper = ...;` line before the registration and
- * typechecking the (pre-this-check) output. Rather than compute a
- * correct-for-every-reference insertion point, an unaccounted-for
- * reference is simply grounds to skip the candidate — same "skip when
- * ambiguous" philosophy as everywhere else in this module, and it keeps
- * `buildClassSpliceEdits`'s "before *the* call" strategy honestly true
- * for every candidate it actually processes.
+ * identifier that resolved to it — a bare-function `.controller` call's
+ * own argument, or an array-style-DI registration's last array element)
+ * and the identifiers in `injectIdentifiers` (already accounted for —
+ * they're deleted alongside `fn`, so their presence doesn't threaten
+ * declare-before-use safety). A caller that inserts the replacement class
+ * only before *this* reference's own enclosing statement can only
+ * guarantee declare-before-use for that one reference — if some other
+ * code (a `.prototype` extension, a second registration under another
+ * name, ...) references the same function earlier in the file, deleting
+ * the function and inserting the class later can still leave that other
+ * reference before the class's new declaration point, resurfacing the
+ * exact `TS2449` bug this whole named-declaration path exists to avoid.
+ * Confirmed by constructing a `X.prototype.helper = ...;` line before the
+ * registration and typechecking the (pre-this-check) output. Rather than
+ * compute a correct-for-every-reference insertion point, an
+ * unaccounted-for reference is simply grounds to skip the candidate —
+ * same "skip when ambiguous" philosophy as everywhere else in this
+ * module, and it keeps every such caller's "before *the* call" strategy
+ * honestly true for every candidate it actually processes.
+ *
+ * Also rejects the degenerate case where `expectedReference` itself sits
+ * nested inside `fn`'s own body — a registration call written inside the
+ * very function it registers (`function X($scope) { ...; angular.module
+ * ('app').controller('X', X); }`). Found by adversarial review, confirmed
+ * by actually running both this codemod's array-style-DI caller and the
+ * already-merged bare-function `.controller('X', X)` caller
+ * (`scope-assignment-to-class-property.ts`) against a constructed repro:
+ * `expectedReference` is the *only* reference (so the check above alone
+ * accepts it), but the caller's insertion point — the reference's own
+ * enclosing top-level statement — falls inside `fn`'s deleted range,
+ * since that statement is itself nested inside `fn`. `applyEdits` then
+ * splices the insertion and the deletion as if they were disjoint, which
+ * they aren't, producing visibly corrupted, still-`matched: true` output
+ * in both callers.
  */
-function hasOtherReferences(fn: FunctionDeclaration, expectedReference: Node, injectIdentifiers: readonly Identifier[]): boolean {
+export function hasOtherReferences(fn: FunctionDeclaration, expectedReference: Node, injectIdentifiers: readonly Identifier[]): boolean {
   const nameNode = fn.getNameNode();
   if (!nameNode) return false;
+  if (expectedReference.getStart() >= fn.getStart(true) && expectedReference.getEnd() <= fn.getEnd()) return true;
   // findReferencesAsNodes() includes the declaration's own name node
   // among its results (confirmed empirically, not assumed from the API
   // docs) — that's not a "reference" in the sense this check cares

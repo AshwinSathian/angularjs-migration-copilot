@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { assertCompiles } from './assert-compiles.js';
 import { transformArrayStyleDiToConstructor } from './array-di-to-constructor.js';
 import type { CodemodResult } from './types.js';
 
@@ -284,5 +285,117 @@ describe('transformArrayStyleDiToConstructor', () => {
     expect(result.warnings).toEqual([
       'Foo: duplicate registration name in this file — ambiguous which one to keep, not safely transformable',
     ]);
+  });
+
+  // Patterns #1/#2 (ADR-030) found their shared `.controller('X', X)`-style
+  // named-reference shape was the dominant real-world idiom, and that the
+  // inline-literal-only detection that predated it matched zero real
+  // controllers in this project's own vendored fixtures. Pattern #3's
+  // array-style-DI last-array-element check had the identical gap,
+  // flagged but not investigated or fixed when pattern #2 landed — these
+  // are that fix, reusing the same `resolveNamedFunctionDeclaration`/
+  // `hasOtherReferences` real-symbol-binding checks rather than
+  // re-deriving them.
+  it('resolves an array-style DI last element that is an identifier referencing a separately-declared function', () => {
+    const before = [
+      'function ctrlImpl($scope, $http) {',
+      '  $scope.items = [];',
+      '}',
+      "angular.module('app').controller('MainCtrl', ['$scope', '$http', ctrlImpl]);",
+    ].join('\n');
+
+    const result = transformArrayStyleDiToConstructor(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).toContain('class MainCtrl {');
+    expect(result.output).toContain('constructor(private $scope: any, private $http: any)');
+    expect(result.output).toContain('$scope.items = [];');
+    expect(result.output).toContain("angular.module('app').controller('MainCtrl', MainCtrl);");
+    expect(result.output).not.toContain('function ctrlImpl');
+  });
+
+  it('deletes the referenced function\'s $inject annotations alongside its declaration', () => {
+    // Redundant with the array's own dependency names once the class is
+    // built — left in place it's a real `Property '$inject' does not
+    // exist on type 'typeof MainCtrl'` error, same class of bug ADR-031
+    // fixed for the bare-function `.controller('X', X)` shape.
+    const before = [
+      'function ctrlImpl($scope) {',
+      '  $scope.x = 1;',
+      '}',
+      "ctrlImpl.$inject = ['$scope'];",
+      "angular.module('app').controller('MainCtrl', ['$scope', ctrlImpl]);",
+    ].join('\n');
+
+    const result = transformArrayStyleDiToConstructor(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).toContain('class MainCtrl {');
+    expect(result.output).not.toContain('$inject');
+  });
+
+  it('skips a named-reference array element whose function is also referenced elsewhere in the file', () => {
+    // Deleting the shared function would break the other reference — the
+    // same ambiguity ADR-033 guards against for bare-function DI.
+    const before = [
+      'function ctrlImpl($scope) {',
+      '  $scope.x = 1;',
+      '}',
+      'ctrlImpl.prototype.helper = function () {};',
+      "angular.module('app').controller('MainCtrl', ['$scope', ctrlImpl]);",
+    ].join('\n');
+
+    const result = transformArrayStyleDiToConstructor(before);
+
+    expect(result).toEqual({
+      matched: false,
+      reason:
+        "MainCtrl: array's last element references a function used elsewhere in the file — ambiguous, not safely transformable",
+    });
+  });
+
+  it('skips a named-reference array element whose identifier does not resolve to a function declaration', () => {
+    const before = [
+      'var ctrlImpl = function ($scope) {',
+      '  $scope.x = 1;',
+      '};',
+      "angular.module('app').controller('MainCtrl', ['$scope', ctrlImpl]);",
+    ].join('\n');
+
+    const result = transformArrayStyleDiToConstructor(before);
+
+    expect(result).toEqual({
+      matched: false,
+      reason: "MainCtrl: array's last element is not a function — not safely transformable",
+    });
+  });
+
+  it('skips a registration that registers itself from inside its own body', () => {
+    // Found by adversarial review: `hasOtherReferences` only rejected an
+    // *other* reference, so a registration call nested inside the very
+    // function it registers — its only reference — was accepted, but the
+    // class-insertion point (the call's own enclosing statement) then
+    // fell inside that same function's deleted range, corrupting the
+    // output. Confirmed by actually running this exact input before the
+    // fix: `matched: true`, visibly truncated and unbalanced output.
+    // Fixed at the shared root in class-wrapping.ts's `hasOtherReferences`
+    // — the same fix also protects the already-merged bare-function
+    // `.controller('X', X)` path (scope-assignment-to-class-property.spec.ts
+    // has the mirrored regression test).
+    const before = [
+      'function ctrlImpl($scope) {',
+      "  angular.module('app').controller('MainCtrl', ['$scope', ctrlImpl]);",
+      '}',
+    ].join('\n');
+
+    const result = transformArrayStyleDiToConstructor(before);
+
+    expect(result).toEqual({
+      matched: false,
+      reason:
+        "MainCtrl: array's last element references a function used elsewhere in the file — ambiguous, not safely transformable",
+    });
   });
 });

@@ -4,12 +4,15 @@ import {
   applyEdits,
   buildClassText,
   constructorParamsText,
+  findInjectAssignmentStatements,
   functionBodyText,
   groupInsertionsByPosition,
   hasExistingTopLevelBinding,
+  hasOtherReferences,
   isSimpleParameter,
   isValidClassName,
   nearestInsertionPointStart,
+  resolveNamedFunctionDeclaration,
   type PositionEdit,
   type WrappableFunction,
 } from './class-wrapping.js';
@@ -42,6 +45,21 @@ interface Candidate {
   readonly topStmtStart: number;
   readonly arrayStart: number;
   readonly arrayEnd: number;
+  /**
+   * Set when the array's last element was an identifier resolving to a
+   * separately-declared `function <name>(...) {...}` (the same
+   * `.controller('X', X)`-style named-reference shape patterns #1/#2
+   * already handle for bare-function DI — ADR-030) rather than an inline
+   * function/arrow literal. The original declaration (and any `$inject`
+   * annotations for it) must be deleted alongside inserting the class, or
+   * it's left behind as dead — and, if its own name happens to equal the
+   * registration name, colliding — code.
+   */
+  readonly namedDecl?: {
+    readonly declStart: number;
+    readonly declEnd: number;
+    readonly injectStatements: readonly Node[];
+  };
 }
 
 export function transformArrayStyleDiToConstructor(sourceText: string): CodemodResult {
@@ -87,9 +105,41 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
   const usedClassNames = new Set<string>();
 
   for (const match of rawMatches) {
-    const { className, fn } = match;
+    const { className, fn: element } = match;
 
-    if (!fn || !(Node.isFunctionExpression(fn) || Node.isArrowFunction(fn))) {
+    // The array's last element is either an inline function/arrow literal,
+    // or (the same named-reference idiom ADR-030 found dominant for
+    // bare-function `.controller('X', X)` registrations — untested and
+    // unfixed here until now) an identifier resolving to a separately-
+    // declared `function X(...) {...}`. `resolveNamedFunctionDeclaration`
+    // and `hasOtherReferences` are the same real-symbol-binding checks
+    // patterns #1/#2 already rely on, reused rather than re-derived.
+    let resolvedFn: WrappableFunction | undefined;
+    let namedDecl: Candidate['namedDecl'];
+
+    if (element && (Node.isFunctionExpression(element) || Node.isArrowFunction(element))) {
+      resolvedFn = element;
+    } else if (element && Node.isIdentifier(element)) {
+      const namedFn = resolveNamedFunctionDeclaration(element);
+      if (namedFn) {
+        const injectAssignments = findInjectAssignmentStatements(sourceFile, namedFn);
+        const injectIdentifiers = injectAssignments.map((a) => a.identifier);
+        if (hasOtherReferences(namedFn, element, injectIdentifiers)) {
+          skipReasons.push(
+            `${className}: array's last element references a function used elsewhere in the file — ambiguous, not safely transformable`
+          );
+          continue;
+        }
+        resolvedFn = namedFn;
+        namedDecl = {
+          declStart: namedFn.getStart(true),
+          declEnd: namedFn.getEnd(),
+          injectStatements: injectAssignments.map((a) => a.statement),
+        };
+      }
+    }
+
+    if (!resolvedFn) {
       skipReasons.push(`${className}: array's last element is not a function — not safely transformable`);
       continue;
     }
@@ -99,15 +149,20 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
       continue;
     }
 
-    if (usedClassNames.has(className) || hasExistingTopLevelBinding(sourceFile, className)) {
+    // A named declaration's own pre-existing binding isn't a real
+    // collision — it's the transform's own target, about to be deleted.
+    if (
+      usedClassNames.has(className) ||
+      hasExistingTopLevelBinding(sourceFile, className, namedDecl ? resolvedFn : undefined)
+    ) {
       skipReasons.push(`${className}: duplicate registration name in this file — ambiguous which one to keep, not safely transformable`);
       continue;
     }
 
-    const definitionArg = fn.getParent();
+    const definitionArg = element?.getParent();
     if (!definitionArg || !Node.isArrayLiteralExpression(definitionArg)) continue;
     const actualDependencies = extractDependencyNames(definitionArg);
-    const paramCount = fn.getParameters().length;
+    const paramCount = resolvedFn.getParameters().length;
     if (actualDependencies.length !== paramCount) {
       skipReasons.push(
         `${className}: dependency array has ${actualDependencies.length} names but the function declares ${paramCount} parameter(s) — ambiguous binding, not safely transformable`
@@ -115,7 +170,7 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
       continue;
     }
 
-    if (!fn.getParameters().every(isSimpleParameter)) {
+    if (!resolvedFn.getParameters().every(isSimpleParameter)) {
       skipReasons.push(
         `${className}: has a destructured, default-valued, or rest parameter — not safely transformable`
       );
@@ -125,10 +180,11 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
     usedClassNames.add(className);
     candidates.push({
       className,
-      fn,
+      fn: resolvedFn,
       topStmtStart: match.topStmtStart,
       arrayStart: match.arrayStart,
       arrayEnd: match.arrayEnd,
+      namedDecl,
     });
   }
 
@@ -157,6 +213,12 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
       end: candidate.arrayEnd,
       replacement: candidate.className,
     });
+    if (candidate.namedDecl) {
+      replacements.push({ pos: candidate.namedDecl.declStart, end: candidate.namedDecl.declEnd, replacement: '' });
+      for (const stmt of candidate.namedDecl.injectStatements) {
+        replacements.push({ pos: stmt.getStart(true), end: stmt.getEnd(), replacement: '' });
+      }
+    }
   }
 
   const output = applyEdits(sourceFile.getFullText(), [

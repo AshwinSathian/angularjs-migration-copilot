@@ -542,4 +542,26 @@ describe('transformScopeAssignmentToClassProperty', () => {
       reason: 'no bare-function controller with a $scope property assignment found',
     });
   });
+
+  it('skips a controller that registers itself from inside its own body', () => {
+    // Found by adversarial review of pattern #3's own reuse of
+    // `hasOtherReferences`: a registration call nested inside the very
+    // function it registers is the *only* reference to that function, so
+    // the "any other reference" check alone accepted it — but the class
+    // insertion point (the call's own enclosing statement) then falls
+    // inside the function's own deleted range, and `applyEdits` spliced
+    // the two overlapping edits as if disjoint. Confirmed by actually
+    // running this exact input before the fix: `matched: true` with
+    // visibly truncated, duplicated, and unbalanced output. Fixed at the
+    // shared root (`hasOtherReferences` in class-wrapping.ts), not
+    // pattern-locally, since this path predates pattern #3.
+    const before = 'function MainCtrl($scope) {\n  $scope.x = 1;\n  angular.module(\'app\').controller(\'MainCtrl\', MainCtrl);\n}';
+
+    const result = transformScopeAssignmentToClassProperty(before);
+
+    expect(result).toEqual({
+      matched: false,
+      reason: 'no bare-function controller with a $scope property assignment found',
+    });
+  });
 });
