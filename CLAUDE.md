@@ -1,10 +1,23 @@
 # Project guardrails
 
-Read [docs/decisions.md](docs/decisions.md) before starting work on any
-milestone. It's short — a running log of decisions that would otherwise get
-silently re-derived (and re-derived differently) each session. Append to it
-when you make a new architectural call mid-milestone; never rewrite past
-entries, even superseded ones.
+**Start every session by reading [docs/PROGRESS.md](docs/PROGRESS.md).** It's
+the single source of truth for what's actually built, verified, and next —
+not this file, not the milestone docs in isolation, not memory of a past
+session. If anything below ever conflicts with what PROGRESS.md says is
+currently true, PROGRESS.md wins; update this file instead of trusting a
+stale assumption baked into it.
+
+Read [docs/decisions.md](docs/decisions.md) next, before starting work on any
+milestone. It's short — a running log of *why* specific technical decisions
+were made, the log PROGRESS.md's "what's true now" summary is built on top
+of. Append to it when you make a new architectural call mid-milestone; never
+rewrite past entries, even superseded ones.
+
+**Before you finish a session:** update `docs/PROGRESS.md` — rewrite the
+status table and "Where things stand" section to match reality, and append
+one line to the session log. A session that ships real work but leaves
+PROGRESS.md describing the previous state has left the next session to
+re-discover what you already know.
 
 ## Module boundaries
 
