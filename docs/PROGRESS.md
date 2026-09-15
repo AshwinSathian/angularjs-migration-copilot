@@ -9,7 +9,7 @@ Update this file at the end of every session — rewrite the status table and "W
 | Milestone | Status | PR |
 |---|---|---|
 | M0 — Inventory scanner | done | [#1](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/1) |
-| M0.5 — Target workspace scaffold | not started | — |
+| M0.5 — Target workspace scaffold | in review | [#3](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/3) |
 | M1 — Deterministic codemods | not started | — |
 | M2 — Verification gate | not started | — |
 | M3 — LLM fallback + scheduler | not started | — |
@@ -30,7 +30,13 @@ Full scope and definition-of-done for each milestone: `docs/milestones/`.
 - `fixtures/angular-phonecat` vendored as a pinned git submodule (commit `ef6f6eb`); its `npm install` and real Karma suite (5/5 specs) have both actually been run on Node 24, not assumed to still work.
 - 84 unit tests, all passing. Went through an 8-angle adversarial review before merge that found and fixed several real bugs — see `docs/decisions.md` ADR-010 and ADR-014–019, and the "Adversarial review round" section of `docs/milestones/m0-inventory.md` for the specifics (a couple are worth reading even if you skip everything else: a regex-based remediation that could corrupt unrelated code, and a scanner that briefly mistook AngularJS's own framework source for the application being migrated).
 
-**Not built yet:** the target Angular workspace scaffold (M0.5), all 10 codemod patterns (M1), the verification gate (M2 — the component this whole project's credibility rests on), LLM-assisted fallback (M3), the NestJS/Angular/Mongo web layer (M4), and the final fixture runs with published numbers (M5). `mrholek/CoreUI-AngularJS` and `akveo/blur-admin` are picked as fixtures and license-checked (`docs/product-spec.md §11`) but not vendored yet.
+**Built and verified (M0.5):**
+- `libs/migration-core/src/scaffold/` — `scaffoldTargetWorkspace()` shells out to the real Angular CLI (`npx @angular/cli@22.1.8 new ...`, subprocess only — no `@angular/*` import, so the module-boundary rule holds) to generate a real Angular workspace into a caller-specified, empty output directory; `verifyWorkspaceBuilds()` runs `ng build` inside it and reports the real exit code. Wired into the CLI as `angularjs-migration-copilot scaffold <outputDir>`.
+- Re-verified this session against the live npm registry (not cached docs, which were a full minor behind): Angular's actual latest stable is `22.1.x`, not `21.x` — see ADR-020. `@angular/cli@22.1.8` pinned as a root devDependency.
+- Real, unmocked run performed and confirmed, not assumed: `ng new` generated a real workspace at the exact requested absolute path, `ng build` exited 0, and `dist/<name>/browser/` contained real build output. This surfaced and fixed a real bug — `ng new --directory` silently mishandles an absolute path by stripping the leading `/` and nesting under the process's cwd instead of erroring — see ADR-021.
+- 11 new unit tests (mocked subprocess for argv/cwd assertions, real trivial subprocess for the generic command-runner). 95 total unit tests across the workspace (80 in `migration-core`, 15 in `secrets-scan`), all passing; `typecheck` and `lint` clean.
+
+**Not built yet:** all 10 codemod patterns (M1), the verification gate (M2 — the component this whole project's credibility rests on), LLM-assisted fallback (M3), the NestJS/Angular/Mongo web layer (M4), and the final fixture runs with published numbers (M5). `mrholek/CoreUI-AngularJS` and `akveo/blur-admin` are picked as fixtures and license-checked (`docs/product-spec.md §11`) but not vendored yet.
 
 **Known, open, non-blocking:**
 - A Dependabot PR may exist proposing an `nx` downgrade to fix the `smol-toml` advisory (ADR-012). Don't merge it without re-deriving the same tradeoff ADR-012 already made — downgrading `nx` was deliberately rejected once already, for reasons that don't go away just because Dependabot found the same CVE.
@@ -39,12 +45,13 @@ Full scope and definition-of-done for each milestone: `docs/milestones/`.
 
 ## What's next
 
-**M0.5 — Target workspace scaffold** (`docs/milestones/m0.5-scaffold.md`). Before writing any code: check Nx's current Angular-version compatibility notes at `nx.dev` and re-verify the Nx/Angular/Node version combination this repo is pinned to still holds — both move on their own schedule, and the guardrail in `CLAUDE.md` about not assuming "latest-latest works together" exists specifically for this step.
+Merge [PR #3](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/3) once `secrets-scan` passes and it's reviewed, then flip M0.5 to done above.
 
-If you'd rather start M1 groundwork instead (the 10 codemod patterns don't strictly need M0.5's scaffold to begin *unit-testing* individual transforms against fixture-file pairs, only to *verify* them against a real workspace), that's a reasonable call to make — just log it in `docs/decisions.md` if you deliberately reorder the milestone sequence, so the next session isn't confused about why M1 started before M0.5 shows as done above.
+Then **M1 — Deterministic codemods** (`docs/milestones/m1-codemods.md`), consuming `scaffoldTargetWorkspace`'s output as the real compile context for `tsc --noEmit` verification per `docs/product-spec.md §6.5`.
 
 ## Session log
 
 Append one entry per session, newest last. Keep each entry to a few lines — this is a changelog, not a transcript; `docs/decisions.md` and the milestone docs carry the detail.
 
 - **2026-09-15** — Repo created from scratch: product spec and architecture doc adversarially reviewed and rewritten for public consumption (license verification, current-defaults verification, ADR-001–009), GitHub repo pushed with branch protection and CI. M0 implemented (`libs/secrets-scan`, `libs/migration-core` ingest + inventory, CLI), then put through an 8-angle adversarial review that found and fixed real bugs before merge (ADR-010, ADR-014–019). Merged via PR #1. This file created to track progress going forward.
+- **2026-09-15** — M0.5 implemented: re-verified Nx/Angular/Node/TypeScript compatibility against the live npm registry, correcting a stale assumption that Angular 21 was current (it's 22.1.x — ADR-020). Built `libs/migration-core/src/scaffold/` (subprocess-only Angular CLI invocation, no `@angular/*` dependency added to `migration-core`), wired a `scaffold` CLI command, added `@angular/cli@22.1.8` as a root devDependency. Real, unmocked run performed: found and fixed a genuine bug where `ng new --directory` mishandles absolute paths (ADR-021), then re-ran and confirmed `ng build` exits 0 against a real generated workspace. 95/95 unit tests passing, typecheck and lint clean. Opened as [PR #3](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/3) — `git` was initially non-functional in this session's shell (macOS Xcode license not accepted); user accepted it mid-session and the branch/commit/push/PR flow completed normally after.
