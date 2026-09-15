@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { Command } from 'commander';
 import {
   transformArrayStyleDiToConstructor,
+  transformControllerAsToClass,
   transformScopeAssignmentToClassProperty,
   type CodemodResult,
 } from './codemods/index.js';
@@ -14,6 +15,7 @@ import { scaffoldTargetWorkspace, verifyWorkspaceBuilds } from './scaffold/index
 const CODEMODS: Record<string, (sourceText: string) => CodemodResult> = {
   'array-di-to-constructor': transformArrayStyleDiToConstructor,
   'scope-assignment-to-class-property': transformScopeAssignmentToClassProperty,
+  'controlleras-to-class': transformControllerAsToClass,
 };
 
 const program = new Command();

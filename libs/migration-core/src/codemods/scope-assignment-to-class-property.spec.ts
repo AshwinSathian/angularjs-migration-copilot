@@ -329,4 +329,132 @@ describe('transformScopeAssignmentToClassProperty', () => {
     expect(result.output).not.toContain('class Main-Ctrl');
     expect(result.warnings).toEqual(["Main-Ctrl: not a valid class identifier"]);
   });
+
+  it('transforms the .controller("X", X) named-reference idiom — the dominant real-world shape, not just the inline-literal one', () => {
+    // Found by actually running this codemod against real blur-admin
+    // fixture files, not assumed: `.controller('X', X)` referencing a
+    // separately-declared `function X (...) {...}` is ~73% of real
+    // `.controller` calls across this project's own vendored fixtures
+    // (66/91), and 0% use an inline function literal — see ADR-030. The
+    // whole function declaration is replaced in place; the registration
+    // line, already `.controller('MainCtrl', MainCtrl)`, needs no edit.
+    const before = [
+      "angular.module('app').controller('MainCtrl', MainCtrl);",
+      '',
+      '/** @ngInject */',
+      'function MainCtrl($scope) {',
+      '  $scope.items = [];',
+      '}',
+    ].join('\n');
+
+    const result = transformScopeAssignmentToClassProperty(before);
+
+    assertMatched(result);
+    expect(result.output).toContain("angular.module('app').controller('MainCtrl', MainCtrl);");
+    expect(result.output).toContain('class MainCtrl {');
+    expect(result.output).toContain('constructor(private $scope: any)');
+    expect(result.output).toContain('this.items = [];');
+    expect(result.output).not.toContain('function MainCtrl');
+  });
+
+  it('resolves a named declaration even when a Ctrl.$inject = [...] ng-annotate assignment sits between the call and the declaration', () => {
+    // A real bug caught by actually running this codemod against the
+    // CoreUI-AngularJS fixture, not assumed: TypeScript's JS binder
+    // records `cardChartCtrl1.$inject = ['$scope'];` as a second,
+    // non-function "declaration" of the same symbol (an expando-property
+    // assignment target), so a resolver requiring exactly one
+    // declaration rejected every controller using this equally-common
+    // manual-DI idiom as ambiguous — zero matches across the whole
+    // fixture before the fix. See ADR-030.
+    const before = [
+      "angular.module('app').controller('MainCtrl', MainCtrl);",
+      '',
+      "MainCtrl.$inject = ['$scope'];",
+      'function MainCtrl($scope) {',
+      '  $scope.labels = [1];',
+      '}',
+    ].join('\n');
+
+    const result = transformScopeAssignmentToClassProperty(before);
+
+    assertMatched(result);
+    expect(result.output).toContain('class MainCtrl {');
+    expect(result.output).toContain('this.labels = [1];');
+    expect(result.output).not.toContain('function MainCtrl');
+  });
+
+  it('replaces a named declaration inside its own IIFE in place, without hoisting it out', () => {
+    const before = [
+      '(function () {',
+      "  'use strict';",
+      "  angular.module('app').controller('MainCtrl', MainCtrl);",
+      '',
+      '  function MainCtrl($scope) {',
+      '    $scope.x = 1;',
+      '  }',
+      '})();',
+    ].join('\n');
+
+    const result = transformScopeAssignmentToClassProperty(before);
+
+    assertMatched(result);
+    const iifeOpenIndex = result.output.indexOf('(function () {');
+    const classIndex = result.output.indexOf('class MainCtrl {');
+    expect(classIndex).toBeGreaterThan(iifeOpenIndex);
+    expect(result.output).toContain('this.x = 1;');
+  });
+
+  it('declares the class before the .controller(X, X) call, not after, since class declarations do not hoist the way the original function did', () => {
+    // A real bug caught by adversarial review, then confirmed by
+    // actually typechecking the output with tsc, not assumed from
+    // reading the splice logic: replacing the function in its own
+    // (later) textual position left the earlier call referencing the
+    // class before its declaration — a real TS2449 compile error,
+    // confirmed against every real hit this fix had claimed. The fix
+    // inserts the class before the call instead of at the function's
+    // original position.
+    const before = "angular.module('app').controller('MainCtrl', MainCtrl);\nfunction MainCtrl($scope) { $scope.x = 1; }";
+
+    const result = transformScopeAssignmentToClassProperty(before);
+
+    assertMatched(result);
+    const classIndex = result.output.indexOf('class MainCtrl {');
+    const callIndex = result.output.indexOf(".controller('MainCtrl', MainCtrl)");
+    expect(classIndex).toBeGreaterThanOrEqual(0);
+    expect(classIndex).toBeLessThan(callIndex);
+    expect(result.output).not.toContain('function MainCtrl');
+  });
+
+  it('deletes a Ctrl.$inject = [...] annotation alongside the named declaration, since it becomes a TypeScript error once the binding is a class', () => {
+    const before = [
+      "angular.module('app').controller('MainCtrl', MainCtrl);",
+      '',
+      "MainCtrl.$inject = ['$scope'];",
+      'function MainCtrl($scope) {',
+      '  $scope.x = 1;',
+      '}',
+    ].join('\n');
+
+    const result = transformScopeAssignmentToClassProperty(before);
+
+    assertMatched(result);
+    expect(result.output).toContain('class MainCtrl {');
+    expect(result.output).not.toContain('$inject');
+  });
+
+  it('skips a second registration that resolves to the same already-claimed named function declaration', () => {
+    // A real corruption bug caught by adversarial review: two matches
+    // referencing the same underlying FunctionDeclaration each scheduled
+    // deletion of its (identical) source span computed against the
+    // *original* text; applying both against the once-shrunk output
+    // spliced into unrelated, already-shifted content. The fix dedups by
+    // the underlying function node, not just by class name.
+    const before = "angular.module('app').controller('MainCtrl', MainCtrl);\nangular.module('app').controller('MainCtrl', MainCtrl);\nfunction MainCtrl($scope) { $scope.x = 1; }";
+
+    const result = transformScopeAssignmentToClassProperty(before);
+
+    assertMatched(result);
+    expect(result.output).toContain('class MainCtrl {');
+    expect((result.output.match(/class MainCtrl/g) ?? []).length).toBe(1);
+  });
 });
