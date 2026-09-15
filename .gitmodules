@@ -1,3 +1,9 @@
 [submodule "fixtures/angular-phonecat"]
 	path = fixtures/angular-phonecat
 	url = https://github.com/angular/angular-phonecat.git
+[submodule "fixtures/CoreUI-AngularJS"]
+	path = fixtures/CoreUI-AngularJS
+	url = https://github.com/mrholek/CoreUI-AngularJS.git
+[submodule "fixtures/blur-admin"]
+	path = fixtures/blur-admin
+	url = https://github.com/akveo/blur-admin.git
