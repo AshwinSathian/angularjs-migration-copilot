@@ -1,5 +1,18 @@
-import { Node, Project, type ArrowFunction, type FunctionExpression, type PropertyAccessExpression, type SourceFile } from 'ts-morph';
+import { Node, Project, type PropertyAccessExpression } from 'ts-morph';
 import { extractDependencyNames, forEachPropertyAccessCall } from '../inventory/ast-helpers.js';
+import {
+  applyEdits,
+  buildClassText,
+  constructorParamsText,
+  functionBodyText,
+  groupInsertionsByPosition,
+  hasExistingTopLevelBinding,
+  isSimpleParameter,
+  isValidClassName,
+  nearestInsertionPointStart,
+  type PositionEdit,
+  type WrappableFunction,
+} from './class-wrapping.js';
 import type { CodemodResult } from './types.js';
 
 /**
@@ -14,19 +27,6 @@ import type { CodemodResult } from './types.js';
  */
 const TRANSFORMABLE_KINDS = new Set(['controller', 'service', 'factory']);
 
-const VALID_IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
-
-/** ECMA-262 reserved words — `VALID_IDENTIFIER` alone accepts these (they're syntactically identifier-shaped) but none is legal as a class name. */
-const RESERVED_WORDS = new Set([
-  'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default', 'delete', 'do',
-  'else', 'export', 'extends', 'false', 'finally', 'for', 'function', 'if', 'import', 'in',
-  'instanceof', 'new', 'null', 'return', 'super', 'switch', 'this', 'throw', 'true', 'try',
-  'typeof', 'var', 'void', 'while', 'with', 'yield', 'let', 'static', 'enum', 'await',
-  'implements', 'package', 'protected', 'interface', 'private', 'public',
-]);
-
-type DiFunction = FunctionExpression | ArrowFunction;
-
 interface RawMatch {
   readonly className: string;
   readonly fn: Node | undefined;
@@ -38,66 +38,10 @@ interface RawMatch {
 
 interface Candidate {
   readonly className: string;
-  readonly fn: DiFunction;
+  readonly fn: WrappableFunction;
   readonly topStmtStart: number;
   readonly arrayStart: number;
   readonly arrayEnd: number;
-}
-
-/**
- * The nearest point a class declaration can be inserted without being
- * hoisted out of an enclosing scope it needs to stay inside — stops at
- * the first ancestor whose parent is the `SourceFile` itself *or* a
- * `Block`. Without the `Block` case, a registration inside the extremely
- * common `(function () { ... })()` IIFE wrapper (62 of 66
- * registration-bearing files across this project's own vendored
- * fixtures use it) would have its class hoisted above the IIFE entirely,
- * severing any reference the body makes to a closure variable declared
- * inside that wrapper.
- */
-function nearestInsertionPointStart(node: Node): number {
-  let current = node;
-  for (;;) {
-    const parent = current.getParent();
-    if (!parent || Node.isSourceFile(parent) || Node.isBlock(parent)) return current.getStart();
-    current = parent;
-  }
-}
-
-function hasExistingTopLevelBinding(sourceFile: SourceFile, name: string): boolean {
-  return (
-    sourceFile.getFunction(name) !== undefined ||
-    sourceFile.getClass(name) !== undefined ||
-    sourceFile.getVariableDeclaration(name) !== undefined
-  );
-}
-
-/**
- * A parameter this codemod can safely carry into a constructor signature
- * as `private <name>: any` — a plain identifier, no default value, no
- * rest. A destructured (`{ $scope }`) or default-valued (`$scope = null`)
- * parameter can't be represented that way without either producing
- * invalid TypeScript (a binding pattern can't be a parameter property) or
- * silently dropping the default — so a function with any such parameter
- * is skipped rather than mistranslated.
- */
-function isSimpleParameter(param: { getNameNode: () => Node; hasInitializer: () => boolean; isRestParameter: () => boolean }): boolean {
-  return Node.isIdentifier(param.getNameNode()) && !param.hasInitializer() && !param.isRestParameter();
-}
-
-/**
- * Builds the replacement class's source text from the matched function
- * node, reusing its exact body rather than re-deriving it — preserves
- * original formatting, comments, and behavior untouched. An arrow
- * function with a concise (non-block) body is wrapped in `{ return ...; }`
- * since a constructor body must be a block.
- */
-function buildClassText(className: string, fn: DiFunction): string {
-  const params = fn.getParameters().map((p) => `private ${p.getName()}: any`).join(', ');
-  const body = fn.getBody();
-  const bodyText = Node.isBlock(body) ? body.getText() : `{ return ${body.getText()}; }`;
-
-  return `class ${className} {\n  constructor(${params}) ${bodyText}\n}`;
 }
 
 export function transformArrayStyleDiToConstructor(sourceText: string): CodemodResult {
@@ -150,7 +94,7 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
       continue;
     }
 
-    if (!VALID_IDENTIFIER.test(className) || RESERVED_WORDS.has(className)) {
+    if (!isValidClassName(className)) {
       skipReasons.push(`${className}: not a valid class identifier`);
       continue;
     }
@@ -199,17 +143,15 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
 
   // Array→identifier replacements are always at distinct spans, one per
   // candidate. Class insertions can share a position — e.g. three chained
-  // calls all landing in the same enclosing statement — so those are
-  // grouped by position and joined in true source order (candidates is
-  // already sorted that way, from rawMatches above).
-  const insertionsByPos = new Map<number, string[]>();
-  const replacements: { pos: number; end: number; replacement: string }[] = [];
+  // calls all landing in the same enclosing statement.
+  const insertions: { pos: number; text: string }[] = [];
+  const replacements: PositionEdit[] = [];
 
   for (const candidate of candidates) {
-    const group = insertionsByPos.get(candidate.topStmtStart) ?? [];
-    group.push(buildClassText(candidate.className, candidate.fn));
-    insertionsByPos.set(candidate.topStmtStart, group);
-
+    insertions.push({
+      pos: candidate.topStmtStart,
+      text: buildClassText(candidate.className, constructorParamsText(candidate.fn), functionBodyText(candidate.fn)),
+    });
     replacements.push({
       pos: candidate.arrayStart,
       end: candidate.arrayEnd,
@@ -217,19 +159,10 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
     });
   }
 
-  const edits = [
-    ...[...insertionsByPos.entries()].map(([pos, classTexts]) => ({
-      pos,
-      end: pos,
-      replacement: `${classTexts.join('\n\n')}\n\n`,
-    })),
+  const output = applyEdits(sourceFile.getFullText(), [
+    ...groupInsertionsByPosition(insertions),
     ...replacements,
-  ].sort((a, b) => b.pos - a.pos);
-
-  let output = sourceFile.getFullText();
-  for (const edit of edits) {
-    output = output.slice(0, edit.pos) + edit.replacement + output.slice(edit.end);
-  }
+  ]);
 
   return skipReasons.length > 0 ? { matched: true, output, warnings: skipReasons } : { matched: true, output };
 }
