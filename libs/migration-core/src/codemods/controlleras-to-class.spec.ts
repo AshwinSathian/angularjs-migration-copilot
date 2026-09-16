@@ -450,4 +450,90 @@ describe('transformControllerAsToClass', () => {
       reason: 'no bare-function controller using the controllerAs (this/vm) idiom found',
     });
   });
+
+  it('skips an outer registration whose body contains a second, unrelated registration nested inside it, but still transforms the inner one', () => {
+    // Found by adversarial review of pattern #3's own reuse of
+    // `hasOtherReferences`, and confirmed to reproduce here too since
+    // `collectBareFunctionControllerMatches` shares the same mechanism:
+    // `hasOtherReferences` only rules out an *other* reference to a
+    // candidate's own function, not a sibling candidate's edit positions
+    // sitting nested inside this candidate's deletion range. Deleting
+    // MainCtrl's declaration would also delete the text OtherCtrl's own
+    // insertion/deletion edits are computed against, corrupting output
+    // while still reporting `matched: true` — confirmed by actually
+    // running this exact input before the fix. Fixed in
+    // `findNestedDeletionConflicts` (class-wrapping.ts), shared with
+    // pattern #3's array-style-DI path.
+    const before = [
+      'function MainCtrl() {',
+      '  this.x = 1;',
+      "  angular.module('app').controller('OtherCtrl', OtherCtrl);",
+      '}',
+      'function OtherCtrl() {',
+      '  this.y = 2;',
+      '}',
+      "angular.module('app').controller('MainCtrl', MainCtrl);",
+    ].join('\n');
+
+    const result = transformControllerAsToClass(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).not.toContain('class MainCtrl');
+    expect(result.output).toContain('class OtherCtrl {');
+    expect(result.output).toContain('function MainCtrl()');
+  });
+
+  it('skips an outer registration whose inline function body contains a second registration nested inside it, but still transforms the inner one', () => {
+    // `findNestedDeletionConflicts` originally only treated a *named-
+    // declaration* deletion range as a conflict source, missing that an
+    // inline function literal's own replaced span (the whole literal,
+    // body included) is corrupted by a sibling's nested edits exactly
+    // the same way. Confirmed by actually running this exact input
+    // before the fix — same gap, mirrored across all three patterns that
+    // share this machinery.
+    const before = [
+      "angular.module('app').controller('Outer', function () {",
+      '  this.x = 1;',
+      "  angular.module('app').controller('Inner', function () {",
+      '    this.y = 2;',
+      '  });',
+      '});',
+    ].join('\n');
+
+    const result = transformControllerAsToClass(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).not.toContain('class Outer');
+    expect(result.output).toContain('class Inner {');
+    expect(result.output).toContain("angular.module('app').controller('Outer', function () {");
+  });
+
+  it('reports an accurate reason when the only real candidate was rejected for a nesting conflict', () => {
+    // `collectBareFunctionControllerMatches` silently drops a nesting-
+    // conflicted match before returning (same silent-exclusion precedent
+    // as every other ambiguous-shape rejection there), which used to
+    // leave callers with no way to tell "the idiom wasn't found" apart
+    // from "the idiom was found but rejected for an unrelated reason" —
+    // a misleading-reason gap found by adversarial review. Here `Inner`
+    // isn't a controllerAs candidate at all (no this/vm assignment), so
+    // `Outer` — which *does* have one — was the only real candidate, and
+    // it's rejected purely because `Inner`'s registration call sits
+    // nested inside its body. The fallback reason must say so, not fall
+    // back to the generic "not found" message.
+    const before = [
+      "angular.module('app').controller('Outer', function () {",
+      '  this.x = 1;',
+      "  angular.module('app').controller('Inner', function () { });",
+      '});',
+    ].join('\n');
+
+    const result = transformControllerAsToClass(before);
+
+    expect(result).toEqual({
+      matched: false,
+      reason: 'Outer: deleting/replacing it would also corrupt another registration nested inside it — not safely transformable',
+    });
+  });
 });

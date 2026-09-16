@@ -542,4 +542,85 @@ describe('transformScopeAssignmentToClassProperty', () => {
       reason: 'no bare-function controller with a $scope property assignment found',
     });
   });
+
+  it('skips a controller that registers itself from inside its own body', () => {
+    // Found by adversarial review of pattern #3's own reuse of
+    // `hasOtherReferences`: a registration call nested inside the very
+    // function it registers is the *only* reference to that function, so
+    // the "any other reference" check alone accepted it — but the class
+    // insertion point (the call's own enclosing statement) then falls
+    // inside the function's own deleted range, and `applyEdits` spliced
+    // the two overlapping edits as if disjoint. Confirmed by actually
+    // running this exact input before the fix: `matched: true` with
+    // visibly truncated, duplicated, and unbalanced output. Fixed at the
+    // shared root (`hasOtherReferences` in class-wrapping.ts), not
+    // pattern-locally, since this path predates pattern #3.
+    const before = 'function MainCtrl($scope) {\n  $scope.x = 1;\n  angular.module(\'app\').controller(\'MainCtrl\', MainCtrl);\n}';
+
+    const result = transformScopeAssignmentToClassProperty(before);
+
+    expect(result).toEqual({
+      matched: false,
+      reason: 'no bare-function controller with a $scope property assignment found',
+    });
+  });
+
+  it('skips an outer registration whose body contains a second, unrelated registration nested inside it, but still transforms the inner one', () => {
+    // A broader form of the self-registration bug above, found by
+    // adversarial review of pattern #3's own reuse of the same
+    // machinery: `hasOtherReferences` only rules out an *other*
+    // reference to a candidate's own function, not a sibling candidate's
+    // edit positions sitting nested inside this candidate's own deletion
+    // range. Deleting MainCtrl's declaration here would also delete the
+    // text otherFn's own insertion/deletion edits are computed against,
+    // corrupting output while still reporting `matched: true` — confirmed
+    // by actually running this exact input before the fix. Fixed in
+    // `findNestedDeletionConflicts` (class-wrapping.ts), shared with
+    // pattern #3's array-style-DI path (array-di-to-constructor.spec.ts
+    // has the mirrored regression test).
+    const before = [
+      'function MainCtrl($scope) {',
+      '  $scope.x = 1;',
+      "  angular.module('app').controller('otherFn', otherFn);",
+      '}',
+      'function otherFn($scope) {',
+      '  $scope.y = 2;',
+      '}',
+      "angular.module('app').controller('MainCtrl', MainCtrl);",
+    ].join('\n');
+
+    const result = transformScopeAssignmentToClassProperty(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).not.toContain('class MainCtrl');
+    expect(result.output).toContain('class otherFn {');
+    expect(result.output).toContain('function MainCtrl($scope)');
+  });
+
+  it('skips an outer registration whose inline function body contains a second registration nested inside it, but still transforms the inner one', () => {
+    // The bare-function-DI equivalent of array-di-to-constructor.spec.ts's
+    // mirrored test: `findNestedDeletionConflicts` originally only
+    // treated a *named-declaration* deletion range as a conflict source,
+    // missing that an inline function literal's own replaced span (the
+    // whole literal, body included) is corrupted by a sibling's nested
+    // edits exactly the same way. Confirmed by actually running this
+    // exact input before the fix.
+    const before = [
+      "angular.module('app').controller('Outer', function ($scope) {",
+      '  $scope.x = 1;',
+      "  angular.module('app').controller('Inner', function ($scope) {",
+      '    $scope.y = 2;',
+      '  });',
+      '});',
+    ].join('\n');
+
+    const result = transformScopeAssignmentToClassProperty(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).not.toContain('class Outer');
+    expect(result.output).toContain('class Inner {');
+    expect(result.output).toContain("angular.module('app').controller('Outer', function ($scope) {");
+  });
 });

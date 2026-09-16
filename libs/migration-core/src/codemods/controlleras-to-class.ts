@@ -3,6 +3,7 @@ import {
   applyEdits,
   buildClassSpliceEdits,
   buildClassText,
+  buildNoMatchReason,
   classWrappingSkipReason,
   collectBareFunctionControllerMatches,
   constructorParamsText,
@@ -102,7 +103,7 @@ export function transformControllerAsToClass(sourceText: string): CodemodResult 
   });
   const sourceFile = project.createSourceFile('/virtual/app.js', sourceText);
 
-  const rawMatches = collectBareFunctionControllerMatches(project);
+  const { matches: rawMatches, nestingConflictClassNames } = collectBareFunctionControllerMatches(project);
 
   const candidates: BareFunctionControllerMatch[] = [];
   const skipReasons: string[] = [];
@@ -158,9 +159,11 @@ export function transformControllerAsToClass(sourceText: string): CodemodResult 
   if (candidates.length === 0) {
     return {
       matched: false,
-      reason: skipReasons.length > 0
-        ? skipReasons.join('; ')
-        : 'no bare-function controller using the controllerAs (this/vm) idiom found',
+      reason: buildNoMatchReason(
+        skipReasons,
+        nestingConflictClassNames,
+        'no bare-function controller using the controllerAs (this/vm) idiom found'
+      ),
     };
   }
 

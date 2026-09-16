@@ -273,8 +273,9 @@ export type BareFunctionControllerMatch =
  * Resolves `identifier` to a `function <name>(...) {...}` declaration via
  * real symbol binding, not text matching — the same rigor
  * `resolvesUniquelyTo` already applies elsewhere in these codemods.
- * Returns `undefined` for anything else a `.controller` call's second
- * argument could be an identifier reference to (an imported binding, a
+ * Returns `undefined` for anything else a bare-function `.controller` call's
+ * second argument, or an array-style-DI registration's last array element
+ * (pattern #3), could be an identifier reference to (an imported binding, a
  * `var x = function () {}`, a class, ...) — this codemod only recognizes
  * the confirmed-dominant `function` declaration shape, not every way a
  * name could resolve to something function-shaped.
@@ -290,7 +291,7 @@ export type BareFunctionControllerMatch =
  * exact idiom throughout and produced zero matches before this fix —
  * not assumed from reading the resolver logic. See ADR-030.
  */
-function resolveNamedFunctionDeclaration(identifier: Node): FunctionDeclaration | undefined {
+export function resolveNamedFunctionDeclaration(identifier: Node): FunctionDeclaration | undefined {
   if (!Node.isIdentifier(identifier)) return undefined;
   const declarations = identifier.getSymbol()?.getDeclarations() ?? [];
   const functionDeclarations = declarations.filter(Node.isFunctionDeclaration);
@@ -332,7 +333,7 @@ function resolveNamedFunctionDeclaration(identifier: Node): FunctionDeclaration 
  * than guessed at, same "skip when ambiguous" philosophy as everywhere
  * else in this module.
  */
-function findInjectAssignmentStatements(sourceFile: SourceFile, fn: FunctionDeclaration): { statement: Node; identifier: Identifier }[] {
+export function findInjectAssignmentStatements(sourceFile: SourceFile, fn: FunctionDeclaration): { statement: Node; identifier: Identifier }[] {
   const results: { statement: Node; identifier: Identifier }[] = [];
   for (const expr of sourceFile.getDescendantsOfKind(SyntaxKind.BinaryExpression)) {
     if (!isPlainAssignment(expr)) continue;
@@ -355,27 +356,45 @@ function findInjectAssignmentStatements(sourceFile: SourceFile, fn: FunctionDecl
 
 /**
  * True if `fn` has any reference other than `expectedReference` (the
- * `.controller` call's own identifier argument) and the identifiers in
- * `injectIdentifiers` (already accounted for — they're deleted alongside
- * `fn`, so their presence doesn't threaten declare-before-use safety).
- * `buildClassSpliceEdits` only guarantees the class is declared before
- * *this* call's reference — if some other code (a `.prototype` extension,
- * a second registration under another name, ...) references the same
- * function earlier in the file, deleting the function and inserting the
- * class later can still leave that other reference before the class's
- * new declaration point, resurfacing the exact `TS2449` bug this whole
- * named-declaration path exists to avoid. Confirmed by constructing a
- * `X.prototype.helper = ...;` line before the registration and
- * typechecking the (pre-this-check) output. Rather than compute a
- * correct-for-every-reference insertion point, an unaccounted-for
- * reference is simply grounds to skip the candidate — same "skip when
- * ambiguous" philosophy as everywhere else in this module, and it keeps
- * `buildClassSpliceEdits`'s "before *the* call" strategy honestly true
- * for every candidate it actually processes.
+ * identifier that resolved to it — a bare-function `.controller` call's
+ * own argument, or an array-style-DI registration's last array element)
+ * and the identifiers in `injectIdentifiers` (already accounted for —
+ * they're deleted alongside `fn`, so their presence doesn't threaten
+ * declare-before-use safety). A caller that inserts the replacement class
+ * only before *this* reference's own enclosing statement can only
+ * guarantee declare-before-use for that one reference — if some other
+ * code (a `.prototype` extension, a second registration under another
+ * name, ...) references the same function earlier in the file, deleting
+ * the function and inserting the class later can still leave that other
+ * reference before the class's new declaration point, resurfacing the
+ * exact `TS2449` bug this whole named-declaration path exists to avoid.
+ * Confirmed by constructing a `X.prototype.helper = ...;` line before the
+ * registration and typechecking the (pre-this-check) output. Rather than
+ * compute a correct-for-every-reference insertion point, an
+ * unaccounted-for reference is simply grounds to skip the candidate —
+ * same "skip when ambiguous" philosophy as everywhere else in this
+ * module, and it keeps every such caller's "before *the* call" strategy
+ * honestly true for every candidate it actually processes.
+ *
+ * Also rejects the degenerate case where `expectedReference` itself sits
+ * nested inside `fn`'s own body — a registration call written inside the
+ * very function it registers (`function X($scope) { ...; angular.module
+ * ('app').controller('X', X); }`). Found by adversarial review, confirmed
+ * by actually running both this codemod's array-style-DI caller and the
+ * already-merged bare-function `.controller('X', X)` caller
+ * (`scope-assignment-to-class-property.ts`) against a constructed repro:
+ * `expectedReference` is the *only* reference (so the check above alone
+ * accepts it), but the caller's insertion point — the reference's own
+ * enclosing top-level statement — falls inside `fn`'s deleted range,
+ * since that statement is itself nested inside `fn`. `applyEdits` then
+ * splices the insertion and the deletion as if they were disjoint, which
+ * they aren't, producing visibly corrupted, still-`matched: true` output
+ * in both callers.
  */
-function hasOtherReferences(fn: FunctionDeclaration, expectedReference: Node, injectIdentifiers: readonly Identifier[]): boolean {
+export function hasOtherReferences(fn: FunctionDeclaration, expectedReference: Node, injectIdentifiers: readonly Identifier[]): boolean {
   const nameNode = fn.getNameNode();
   if (!nameNode) return false;
+  if (expectedReference.getStart() >= fn.getStart(true) && expectedReference.getEnd() <= fn.getEnd()) return true;
   // findReferencesAsNodes() includes the declaration's own name node
   // among its results (confirmed empirically, not assumed from the API
   // docs) — that's not a "reference" in the sense this check cares
@@ -384,6 +403,66 @@ function hasOtherReferences(fn: FunctionDeclaration, expectedReference: Node, in
   return nameNode.findReferencesAsNodes().some(
     (ref) => ref !== nameNode && ref !== expectedReference && !injectIdentifiers.includes(ref as Identifier)
   );
+}
+
+/**
+ * One item's protected positions (every edit position it needs, both
+ * insertion and replacement/deletion) plus every `[start, end)` range its
+ * own edits remove or replace outright — a named declaration's deletion
+ * range, `$inject` statement ranges, *and* an inline function literal's
+ * own replaced span (the whole literal, body included, is replaced by
+ * the bare class name — just as much a "this text is gone" edit as a
+ * named declaration's deletion, even though nothing is textually
+ * deleted from the file elsewhere).
+ */
+export interface NestingCheckItem {
+  readonly protectedPositions: readonly number[];
+  readonly deletedRanges: readonly { readonly start: number; readonly end: number }[];
+}
+
+/**
+ * Indices (into `items`) of every item with a `deletedRanges` entry that
+ * strictly contains another item's protected position — a structural
+ * conflict `hasOtherReferences`'s per-candidate, self-only check cannot
+ * see, since it only knows about one candidate's own function at a time,
+ * not the full accepted set.
+ *
+ * `applyEdits` assumes every edit's `[pos, end)` is either disjoint from
+ * every other edit or exactly equal (the same-position insertion case
+ * `groupInsertionsByPosition` already merges) — never one *containing*
+ * another. A candidate's own deleted/replaced range can violate that
+ * assumption even when `hasOtherReferences` correctly finds no *other*
+ * reference to that candidate's own function: nothing stops a sibling
+ * candidate's registration call from being written *inside* that range —
+ * inside a named declaration's body (ADR-034/035) or, just as corrupting,
+ * inside an inline function literal's own body, which gets replaced by
+ * the bare class name wholesale. Either way, deleting/replacing the
+ * outer range also destroys the text the sibling's own edits are
+ * computed against, and `applyEdits` — which slices using each edit's
+ * *original*-text offsets — corrupts the output while still reporting
+ * `matched: true`. Confirmed by actually constructing both shapes (an
+ * outer named-declaration controller and, found by a later review round,
+ * an outer *inline-literal* controller, each with a second, unrelated
+ * `.controller(...)` call nested in its body) and running them through
+ * both the array-style-DI codemod and the already-merged bare-function
+ * `.controller(...)` one — all four combinations produced visibly
+ * garbled, brace-unbalanced output before this check covered inline
+ * literals too. The fix: reject the *outer* (containing) candidate
+ * entirely rather than try to compute a correct-for-every-nested-sibling
+ * edit order — same "skip when ambiguous" philosophy as everywhere else
+ * in this module. The nested sibling itself is unaffected and still
+ * transforms normally, since the outer candidate's own transform is
+ * skipped and its source text is left exactly as written.
+ */
+export function findNestedDeletionConflicts(items: readonly NestingCheckItem[]): ReadonlySet<number> {
+  const conflicting = new Set<number>();
+  items.forEach((item, i) => {
+    const hasConflict = item.deletedRanges.some((range) =>
+      items.some((other, j) => i !== j && other.protectedPositions.some((p) => p > range.start && p < range.end))
+    );
+    if (hasConflict) conflicting.add(i);
+  });
+  return conflicting;
 }
 
 /**
@@ -402,8 +481,22 @@ function hasOtherReferences(fn: FunctionDeclaration, expectedReference: Node, in
  * its outermost (last-in-source) call first during traversal, so sorting
  * by each call's own method-name-token position afterward restores true
  * source order before any candidate decision is made.
+ *
+ * `nestingConflictClassNames` is returned alongside `matches`, not
+ * silently dropped, even though a conflicting match is still excluded
+ * from `matches` itself (same silent-exclusion precedent as every other
+ * case in this function where resolving a match turns out to be
+ * ambiguous). Without it, a caller whose *only* real candidate happened
+ * to be nesting-conflicted had no way to tell "the idiom wasn't there"
+ * apart from "the idiom was there but got rejected for an unrelated
+ * reason," and fell back to the generic "not found" reason even though
+ * something real was found — a misleading-reason gap a later adversarial
+ * review round caught, not a hypothetical.
  */
-export function collectBareFunctionControllerMatches(project: Project): BareFunctionControllerMatch[] {
+export function collectBareFunctionControllerMatches(project: Project): {
+  readonly matches: readonly BareFunctionControllerMatch[];
+  readonly nestingConflictClassNames: readonly string[];
+} {
   const rawMatches: BareFunctionControllerMatch[] = [];
 
   forEachPropertyAccessCall(project, (call: CallExpression, expression: PropertyAccessExpression, sourceFile: SourceFile) => {
@@ -453,7 +546,33 @@ export function collectBareFunctionControllerMatches(project: Project): BareFunc
     });
   });
 
-  return rawMatches.sort((a, b) => a.sortKey - b.sortKey);
+  const sorted = rawMatches.sort((a, b) => a.sortKey - b.sortKey);
+
+  // Same silent-exclusion precedent as the `namedFn`/`hasOtherReferences`
+  // checks above: a structurally-conflicting match (named-declaration or
+  // inline-literal alike — see `findNestedDeletionConflicts`'s own
+  // docstring for why an inline literal's replaced span is just as much
+  // a conflict source) is treated as not safely recognized, not as a
+  // recognized-but-skipped candidate — consistent with how this function
+  // already handles every other case where resolving the shape turns out
+  // to be ambiguous.
+  const items: NestingCheckItem[] = sorted.map((m) => ({
+    protectedPositions: m.isNamedDeclaration
+      ? [m.topStmtStart, m.fn.getStart(true), m.fn.getEnd(), ...m.injectStatements.flatMap((s) => [s.getStart(true), s.getEnd()])]
+      : [m.topStmtStart, m.fn.getStart(), m.fn.getEnd()],
+    deletedRanges: m.isNamedDeclaration
+      ? [
+          { start: m.fn.getStart(true), end: m.fn.getEnd() },
+          ...m.injectStatements.map((s) => ({ start: s.getStart(true), end: s.getEnd() })),
+        ]
+      : [{ start: m.fn.getStart(), end: m.fn.getEnd() }],
+  }));
+  const conflicting = findNestedDeletionConflicts(items);
+
+  return {
+    matches: sorted.filter((_, i) => !conflicting.has(i)),
+    nestingConflictClassNames: sorted.filter((_, i) => conflicting.has(i)).map((m) => m.className),
+  };
 }
 
 /**
@@ -500,6 +619,33 @@ export function buildClassSpliceEdits(
     insertion: { pos: match.topStmtStart, text: classText },
     replacements: [{ pos: match.fn.getStart(), end: match.fn.getEnd(), replacement: match.className }],
   };
+}
+
+/**
+ * The `matched: false` `reason` string for a pattern whose candidate loop
+ * ended with nothing to transform — shared by both `collectBareFunctionControllerMatches`
+ * callers (patterns #1/#2) so the fallback reason honestly distinguishes
+ * "the idiom was never there" from "the idiom was there but every
+ * instance got rejected," rather than always falling back to the same
+ * generic "not found" message regardless of which is true. Found missing
+ * by adversarial review: a file whose *only* real candidate was silently
+ * dropped by `collectBareFunctionControllerMatches`'s own nesting-conflict
+ * filter reported the generic reason, which is factually wrong — the
+ * idiom genuinely was found, just rejected for an unrelated,
+ * corruption-avoidance reason.
+ */
+export function buildNoMatchReason(
+  skipReasons: readonly string[],
+  nestingConflictClassNames: readonly string[],
+  genericReason: string
+): string {
+  if (skipReasons.length > 0) return skipReasons.join('; ');
+  if (nestingConflictClassNames.length > 0) {
+    return nestingConflictClassNames
+      .map((name) => `${name}: deleting/replacing it would also corrupt another registration nested inside it — not safely transformable`)
+      .join('; ');
+  }
+  return genericReason;
 }
 
 export interface PositionEdit {

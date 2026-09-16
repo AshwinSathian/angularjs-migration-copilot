@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { assertCompiles } from './assert-compiles.js';
 import { transformArrayStyleDiToConstructor } from './array-di-to-constructor.js';
 import type { CodemodResult } from './types.js';
 
@@ -283,6 +284,221 @@ describe('transformArrayStyleDiToConstructor', () => {
     expect(result.output).toContain(".service('Foo', ['$http', function ($http) { this.b = $http; }])");
     expect(result.warnings).toEqual([
       'Foo: duplicate registration name in this file — ambiguous which one to keep, not safely transformable',
+    ]);
+  });
+
+  // Patterns #1/#2 (ADR-030) found their shared `.controller('X', X)`-style
+  // named-reference shape was the dominant real-world idiom, and that the
+  // inline-literal-only detection that predated it matched zero real
+  // controllers in this project's own vendored fixtures. Pattern #3's
+  // array-style-DI last-array-element check had the identical gap,
+  // flagged but not investigated or fixed when pattern #2 landed — these
+  // are that fix, reusing the same `resolveNamedFunctionDeclaration`/
+  // `hasOtherReferences` real-symbol-binding checks rather than
+  // re-deriving them.
+  it('resolves an array-style DI last element that is an identifier referencing a separately-declared function', () => {
+    const before = [
+      'function ctrlImpl($scope, $http) {',
+      '  $scope.items = [];',
+      '}',
+      "angular.module('app').controller('MainCtrl', ['$scope', '$http', ctrlImpl]);",
+    ].join('\n');
+
+    const result = transformArrayStyleDiToConstructor(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).toContain('class MainCtrl {');
+    expect(result.output).toContain('constructor(private $scope: any, private $http: any)');
+    expect(result.output).toContain('$scope.items = [];');
+    expect(result.output).toContain("angular.module('app').controller('MainCtrl', MainCtrl);");
+    expect(result.output).not.toContain('function ctrlImpl');
+  });
+
+  it('deletes the referenced function\'s $inject annotations alongside its declaration', () => {
+    // Redundant with the array's own dependency names once the class is
+    // built — left in place it's a real `Property '$inject' does not
+    // exist on type 'typeof MainCtrl'` error, same class of bug ADR-031
+    // fixed for the bare-function `.controller('X', X)` shape.
+    const before = [
+      'function ctrlImpl($scope) {',
+      '  $scope.x = 1;',
+      '}',
+      "ctrlImpl.$inject = ['$scope'];",
+      "angular.module('app').controller('MainCtrl', ['$scope', ctrlImpl]);",
+    ].join('\n');
+
+    const result = transformArrayStyleDiToConstructor(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).toContain('class MainCtrl {');
+    expect(result.output).not.toContain('$inject');
+  });
+
+  it('skips a named-reference array element whose function is also referenced elsewhere in the file', () => {
+    // Deleting the shared function would break the other reference — the
+    // same ambiguity ADR-033 guards against for bare-function DI.
+    const before = [
+      'function ctrlImpl($scope) {',
+      '  $scope.x = 1;',
+      '}',
+      'ctrlImpl.prototype.helper = function () {};',
+      "angular.module('app').controller('MainCtrl', ['$scope', ctrlImpl]);",
+    ].join('\n');
+
+    const result = transformArrayStyleDiToConstructor(before);
+
+    expect(result).toEqual({
+      matched: false,
+      reason:
+        "MainCtrl: array's last element references a function used elsewhere in the file — ambiguous, not safely transformable",
+    });
+  });
+
+  it('skips a named-reference array element whose identifier does not resolve to a function declaration', () => {
+    const before = [
+      'var ctrlImpl = function ($scope) {',
+      '  $scope.x = 1;',
+      '};',
+      "angular.module('app').controller('MainCtrl', ['$scope', ctrlImpl]);",
+    ].join('\n');
+
+    const result = transformArrayStyleDiToConstructor(before);
+
+    expect(result).toEqual({
+      matched: false,
+      reason: "MainCtrl: array's last element is not a function — not safely transformable",
+    });
+  });
+
+  it('skips a registration that registers itself from inside its own body', () => {
+    // Found by adversarial review: `hasOtherReferences` only rejected an
+    // *other* reference, so a registration call nested inside the very
+    // function it registers — its only reference — was accepted, but the
+    // class-insertion point (the call's own enclosing statement) then
+    // fell inside that same function's deleted range, corrupting the
+    // output. Confirmed by actually running this exact input before the
+    // fix: `matched: true`, visibly truncated and unbalanced output.
+    // Fixed at the shared root in class-wrapping.ts's `hasOtherReferences`
+    // — the same fix also protects the already-merged bare-function
+    // `.controller('X', X)` path (scope-assignment-to-class-property.spec.ts
+    // has the mirrored regression test).
+    const before = [
+      'function ctrlImpl($scope) {',
+      "  angular.module('app').controller('MainCtrl', ['$scope', ctrlImpl]);",
+      '}',
+    ].join('\n');
+
+    const result = transformArrayStyleDiToConstructor(before);
+
+    expect(result).toEqual({
+      matched: false,
+      reason:
+        "MainCtrl: array's last element references a function used elsewhere in the file — ambiguous, not safely transformable",
+    });
+  });
+
+  it('skips an outer registration whose body contains a second, unrelated registration nested inside it, but still transforms the inner one', () => {
+    // A broader form of the self-registration bug above, found by a
+    // second adversarial review round: `hasOtherReferences` only rules
+    // out an *other* reference to a candidate's own function, not a
+    // sibling candidate's edit positions sitting nested inside this
+    // candidate's own deletion range. Deleting ctrlImpl's declaration
+    // here would also delete the text OtherCtrl's own insertion/
+    // replacement edits are computed against, corrupting output while
+    // still reporting `matched: true` — confirmed by actually running
+    // this exact input before the fix. Fixed in
+    // `findNestedDeletionConflicts` (class-wrapping.ts), shared with the
+    // bare-function `.controller('X', X)` path (mirrored regression
+    // tests in scope-assignment-to-class-property.spec.ts and
+    // controlleras-to-class.spec.ts).
+    const before = [
+      'function ctrlImpl($scope) {',
+      '  $scope.x = 1;',
+      "  angular.module('app').controller('OtherCtrl', ['$scope', otherFn]);",
+      '}',
+      'function otherFn($scope) {',
+      '  $scope.y = 2;',
+      '}',
+      "angular.module('app').controller('MainCtrl', ['$scope', ctrlImpl]);",
+    ].join('\n');
+
+    const result = transformArrayStyleDiToConstructor(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).not.toContain('class MainCtrl');
+    expect(result.output).toContain('class OtherCtrl {');
+    expect(result.output).toContain('function ctrlImpl($scope)');
+    expect(result.warnings).toEqual([
+      'MainCtrl: deleting the referenced function would also corrupt another registration nested inside it — not safely transformable',
+    ]);
+  });
+
+  it('skips an outer registration whose inline function body contains a second registration nested inside it, but still transforms the inner one', () => {
+    // A gap in the nesting-conflict fix above, found by a later
+    // adversarial review round: `findNestedDeletionConflicts` only
+    // treated a *named-declaration* deletion range as something a
+    // sibling candidate's edits could be corrupted by nesting inside.
+    // But an *inline* function/arrow literal candidate's own replaced
+    // span (the whole array, including the entire inline body) is just
+    // as much a "this text is gone" edit once it's replaced by the bare
+    // class name — confirmed by actually running this exact input before
+    // the fix: `matched: true` with visibly garbled, misaligned output
+    // (`angular.module('app').controller('Outer', Outerontroller('Inner'`
+    // ...). Fixed by making every candidate's own deleted/replaced range
+    // — not just a named declaration's — a conflict source in
+    // `findNestedDeletionConflicts` (class-wrapping.ts).
+    const before = [
+      "angular.module('app').controller('Outer', ['$scope', function ($scope) {",
+      "  angular.module('app').controller('Inner', ['$http', function ($http) {",
+      "    $http.get('/x');",
+      '  }]);',
+      '}]);',
+    ].join('\n');
+
+    const result = transformArrayStyleDiToConstructor(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).not.toContain('class Outer');
+    expect(result.output).toContain('class Inner {');
+    expect(result.output).toContain("angular.module('app').controller('Outer', ['$scope', function ($scope) {");
+  });
+
+  it('does not let a nesting-conflicted candidate block an unrelated, later registration sharing its name', () => {
+    // Found by adversarial review: name deduplication used to happen in
+    // the same pass that resolved each candidate, before nesting-conflict
+    // filtering ran — so a candidate that was *always* going to be
+    // dropped for nesting still claimed its class name first, wrongly
+    // rejecting a completely independent, perfectly valid later
+    // registration that happened to share it. Confirmed by actually
+    // running this exact input before the fix: the second `Foo` (which
+    // has nothing to do with `ctrlImpl`/`Nested`) was rejected as a
+    // "duplicate" even though the first `Foo` was never going to survive
+    // anyway. Fixed by deferring name-dedup until after nesting-conflict
+    // filtering, mirroring `collectBareFunctionControllerMatches`'s own
+    // filter-before-return order.
+    const before = [
+      'function ctrlImpl($scope) {',
+      '  $scope.x = 1;',
+      "  angular.module('app').service('Nested', ['$http', nestedFn]);",
+      '}',
+      'function nestedFn($http) {}',
+      "angular.module('app').controller('Foo', ['$scope', ctrlImpl]);",
+      "angular.module('app').controller('Foo', ['$scope', function ($scope) { $scope.y = 2; }]);",
+    ].join('\n');
+
+    const result = transformArrayStyleDiToConstructor(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).toContain('class Nested {');
+    expect(result.output).toContain('class Foo {');
+    expect(result.output).toContain('$scope.y = 2;');
+    expect(result.warnings).toEqual([
+      'Foo: deleting the referenced function would also corrupt another registration nested inside it — not safely transformable',
     ]);
   });
 });

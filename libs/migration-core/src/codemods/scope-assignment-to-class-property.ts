@@ -3,6 +3,7 @@ import {
   applyEdits,
   buildClassSpliceEdits,
   buildClassText,
+  buildNoMatchReason,
   classWrappingSkipReason,
   collectBareFunctionControllerMatches,
   constructorParamsText,
@@ -128,7 +129,7 @@ export function transformScopeAssignmentToClassProperty(sourceText: string): Cod
   });
   const sourceFile = project.createSourceFile('/virtual/app.js', sourceText);
 
-  const rawMatches = collectBareFunctionControllerMatches(project);
+  const { matches: rawMatches, nestingConflictClassNames } = collectBareFunctionControllerMatches(project);
 
   const candidates: Candidate[] = [];
   const skipReasons: string[] = [];
@@ -197,9 +198,11 @@ export function transformScopeAssignmentToClassProperty(sourceText: string): Cod
   if (candidates.length === 0) {
     return {
       matched: false,
-      reason: skipReasons.length > 0
-        ? skipReasons.join('; ')
-        : 'no bare-function controller with a $scope property assignment found',
+      reason: buildNoMatchReason(
+        skipReasons,
+        nestingConflictClassNames,
+        'no bare-function controller with a $scope property assignment found'
+      ),
     };
   }
 
