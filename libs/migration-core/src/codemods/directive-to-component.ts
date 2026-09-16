@@ -77,11 +77,12 @@ interface RawMatch {
   readonly topStmtStart: number;
 }
 
-function toPascalCase(name: string): string {
+/** Exported for reuse by pattern #9 (`bindings-to-input.ts`), which builds the same class-name/selector shapes for `.component()` registrations. */
+export function toPascalCase(name: string): string {
   return name.length === 0 ? name : name.charAt(0).toUpperCase() + name.slice(1);
 }
 
-function toKebabCase(name: string): string {
+export function toKebabCase(name: string): string {
   return name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
 }
 
@@ -103,7 +104,7 @@ function getObjectLiteralPropertyValue(obj: ObjectLiteralExpression, name: strin
  * through the codemod before this fix: `matched: true`, an empty class
  * body — the controller's entire logic silently dropped, not skipped.
  */
-function getObjectLiteralProperty(obj: ObjectLiteralExpression, name: string): { readonly present: boolean; readonly value: Node | undefined } {
+export function getObjectLiteralProperty(obj: ObjectLiteralExpression, name: string): { readonly present: boolean; readonly value: Node | undefined } {
   const prop = obj.getProperty(name);
   if (!prop) return { present: false, value: undefined };
   return { present: true, value: Node.isPropertyAssignment(prop) ? prop.getInitializer() : undefined };
@@ -112,6 +113,37 @@ function getObjectLiteralProperty(obj: ObjectLiteralExpression, name: string): {
 /** `false` is the AngularJS default for `scope`/`transclude` — only a truthy value (or presence at all, for `compile`/`link`) is a real opt-in worth flagging. */
 function isTruthyValue(value: Node | undefined): boolean {
   return value !== undefined && value.getKind() !== SyntaxKind.FalseKeyword;
+}
+
+/**
+ * `template`/`templateUrl` extraction, shared between pattern #4
+ * (`.directive`'s DDO) and pattern #9 (`.component()`'s definition
+ * object) — both read the identical pair of properties off an object
+ * literal the same way (prefer `template`, fall back to `templateUrl`,
+ * skip on anything but a plain string literal for whichever is present).
+ * Originally duplicated near-verbatim between the two files despite this
+ * same module already exporting three other helpers for exactly this
+ * "reuse rather than re-derive" reason — extracted here once the
+ * duplication was flagged by review, not written this way from the
+ * start.
+ */
+export function extractTemplateProp(obj: ObjectLiteralExpression, registrationName: string): { readonly templateProp: string | undefined } | { readonly skipReason: string } {
+  const templateProperty = getObjectLiteralProperty(obj, 'template');
+  const templateUrlProperty = getObjectLiteralProperty(obj, 'templateUrl');
+
+  if (templateProperty.present) {
+    if (!templateProperty.value || !Node.isStringLiteral(templateProperty.value)) {
+      return { skipReason: `${registrationName}: template is not a plain string literal — not safely transformable` };
+    }
+    return { templateProp: `template: ${templateProperty.value.getText()}` };
+  }
+  if (templateUrlProperty.present) {
+    if (!templateUrlProperty.value || !Node.isStringLiteral(templateUrlProperty.value)) {
+      return { skipReason: `${registrationName}: templateUrl is not a plain string literal — not safely transformable` };
+    }
+    return { templateProp: `templateUrl: ${templateUrlProperty.value.getText()}` };
+  }
+  return { templateProp: undefined };
 }
 
 /**
@@ -250,22 +282,12 @@ export function transformDirectiveToComponent(sourceText: string): CodemodResult
       continue;
     }
 
-    const templateProperty = getObjectLiteralProperty(ddo, 'template');
-    const templateUrlProperty = getObjectLiteralProperty(ddo, 'templateUrl');
-    let templateProp: string | undefined;
-    if (templateProperty.present) {
-      if (!templateProperty.value || !Node.isStringLiteral(templateProperty.value)) {
-        skipReasons.push(`${directiveName}: template is not a plain string literal — not safely transformable`);
-        continue;
-      }
-      templateProp = `template: ${templateProperty.value.getText()}`;
-    } else if (templateUrlProperty.present) {
-      if (!templateUrlProperty.value || !Node.isStringLiteral(templateUrlProperty.value)) {
-        skipReasons.push(`${directiveName}: templateUrl is not a plain string literal — not safely transformable`);
-        continue;
-      }
-      templateProp = `templateUrl: ${templateUrlProperty.value.getText()}`;
+    const templateResult = extractTemplateProp(ddo, directiveName);
+    if ('skipReason' in templateResult) {
+      skipReasons.push(templateResult.skipReason);
+      continue;
     }
+    const { templateProp } = templateResult;
 
     const decoratorName = templateProp ? 'Component' : 'Directive';
     const className = `${toPascalCase(directiveName)}${decoratorName}`;

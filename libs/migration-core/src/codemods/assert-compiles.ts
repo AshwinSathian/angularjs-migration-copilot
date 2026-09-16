@@ -47,6 +47,27 @@ import { Project } from 'ts-morph';
  */
 const IGNORED_DIAGNOSTIC_CODES = new Set([2339, 2304, 2571, 2683, 7006, 7034]);
 
+/**
+ * 2552 (`Cannot find name 'X'. Did you mean 'Y'?`) is TypeScript's
+ * alternate code for an undefined identifier, chosen instead of the
+ * already-ignored 2304 specifically when an unrelated global is a close
+ * spelling match to suggest — `Input` vs. `GlobalEventHandlers.oninput`
+ * is the one real case this project's codemods hit (pattern #9's
+ * `@Input()`, left undefined same as `@Component`/`@Directive`'s own
+ * 2304). Deliberately *not* added to `IGNORED_DIAGNOSTIC_CODES` as a bare
+ * code, unlike every other entry there: this code specifically covers
+ * near-miss-spelling errors, which is exactly the class of real codemod
+ * bug (e.g. emitting a typo'd reference to an existing name) this helper
+ * exists to catch — a blanket ignore would silently pass that too.
+ * Scoped to the exact known messages instead, so a future near-miss
+ * diagnostic this project hasn't already identified as safe still fails
+ * the check rather than being silently absorbed by an overly broad
+ * code-level ignore.
+ */
+const IGNORED_2552_MESSAGES = new Set([
+  `Cannot find name 'Input'. Did you mean 'oninput'?`,
+]);
+
 export function assertCompiles(outputSource: string): void {
   const project = new Project({
     useInMemoryFileSystem: true,
@@ -56,7 +77,11 @@ export function assertCompiles(outputSource: string): void {
 
   const realDiagnostics = sourceFile
     .getPreEmitDiagnostics()
-    .filter((d) => !IGNORED_DIAGNOSTIC_CODES.has(d.getCode()));
+    .filter((d) => {
+      if (IGNORED_DIAGNOSTIC_CODES.has(d.getCode())) return false;
+      if (d.getCode() === 2552 && IGNORED_2552_MESSAGES.has(d.getMessageText().toString())) return false;
+      return true;
+    });
 
   if (realDiagnostics.length > 0) {
     const messages = realDiagnostics

@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { Command } from 'commander';
 import {
   transformArrayStyleDiToConstructor,
+  transformBindingsToInput,
   transformControllerAsToClass,
   transformDirectiveToComponent,
   transformScopeAssignmentToClassProperty,
@@ -18,6 +19,7 @@ const CODEMODS: Record<string, (sourceText: string) => CodemodResult> = {
   'scope-assignment-to-class-property': transformScopeAssignmentToClassProperty,
   'controlleras-to-class': transformControllerAsToClass,
   'directive-to-component': transformDirectiveToComponent,
+  'bindings-to-input': transformBindingsToInput,
 };
 
 const program = new Command();
