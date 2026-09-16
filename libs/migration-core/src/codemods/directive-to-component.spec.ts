@@ -217,7 +217,7 @@ describe('transformDirectiveToComponent', () => {
 
     expect(result).toEqual({
       matched: false,
-      reason: 'notifications: controller is a string or external reference — not resolvable within a single file',
+      reason: 'notifications: controller is a string, external reference, or an unsupported shape (e.g. method shorthand) — not resolvable within a single file',
     });
   });
 
@@ -281,6 +281,80 @@ describe('transformDirectiveToComponent', () => {
     expect(result).toEqual({
       matched: false,
       reason: 'foo: derived class name "FooComponent" collides with an existing name in this file — ambiguous, not safely transformable',
+    });
+  });
+
+  it('derives an attribute selector for a restrict value combining A with a non-E letter, not just a pure "A" string', () => {
+    // A one-letter regex (`/^A+$/`) previously misclassified a
+    // multi-letter `restrict` naming 'A' but not 'E' (e.g. 'AC') as
+    // element-style, since it wasn't a *pure* run of 'A' characters —
+    // even though it just as clearly excludes 'E'.
+    const before = [
+      "angular.module('app').directive('foo', function () {",
+      '  return {',
+      "    restrict: 'AC',",
+      "    templateUrl: 'foo.html'",
+      '  };',
+      '});',
+    ].join('\n');
+
+    const result = transformDirectiveToComponent(before);
+
+    assertMatched(result);
+    expect(result.output).toContain("selector: '[foo]'");
+  });
+
+  it('skips (does not silently drop) a controller written as ES6 method shorthand', () => {
+    // Found by adversarial review: `getObjectLiteralPropertyValue` only
+    // recognized a plain `key: value` property assignment, so a
+    // method-shorthand `controller() {...}` (ordinary, valid JS) wasn't
+    // even detected as *present* — the codemod silently treated the
+    // directive as if it had no controller at all, emitting an empty
+    // class with the controller's real logic dropped entirely, still
+    // reporting `matched: true`. Confirmed by actually running this
+    // exact input before the fix. Fixed by distinguishing "property
+    // absent" from "property present but not a recognized shape" —
+    // the latter is now a documented skip, not a silent no-op.
+    const before = [
+      "angular.module('app').directive('widget', function () {",
+      '  return {',
+      "    restrict: 'E',",
+      "    template: '<div></div>',",
+      '    controller() {',
+      '      this.x = 1;',
+      '    }',
+      '  };',
+      '});',
+    ].join('\n');
+
+    const result = transformDirectiveToComponent(before);
+
+    expect(result).toEqual({
+      matched: false,
+      reason: 'widget: controller is a string, external reference, or an unsupported shape (e.g. method shorthand) — not resolvable within a single file',
+    });
+  });
+
+  it('skips (does not silently drop) a template written as ES6 method shorthand', () => {
+    // Same class of bug as the method-shorthand controller case, for
+    // `template`: a method-shorthand `template(el, attrs) {...}` wasn't
+    // detected as present, so the codemod silently downgraded the
+    // directive to @Directive (no view) instead of skipping it —
+    // dropping the entire view, not just failing to transform it.
+    const before = [
+      "angular.module('app').directive('widget', function () {",
+      '  return {',
+      "    restrict: 'E',",
+      '    template(el, attrs) { return el; }',
+      '  };',
+      '});',
+    ].join('\n');
+
+    const result = transformDirectiveToComponent(before);
+
+    expect(result).toEqual({
+      matched: false,
+      reason: 'widget: template is not a plain string literal — not safely transformable',
     });
   });
 });

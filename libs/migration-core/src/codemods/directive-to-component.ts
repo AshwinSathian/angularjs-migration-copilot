@@ -69,7 +69,6 @@ import type { CodemodResult } from './types.js';
  * being deleted for a sibling registration's edits to end up nested
  * inside, since this pattern only ever inserts.
  */
-const RESTRICT_ATTRIBUTE_ONLY = /^A+$/;
 
 interface RawMatch {
   readonly directiveName: string;
@@ -89,6 +88,25 @@ function toKebabCase(name: string): string {
 function getObjectLiteralPropertyValue(obj: ObjectLiteralExpression, name: string): Node | undefined {
   const prop = obj.getProperty(name);
   return prop && Node.isPropertyAssignment(prop) ? prop.getInitializer() : undefined;
+}
+
+/**
+ * Distinguishes "property doesn't exist at all" from "property exists but
+ * isn't a plain `key: value` assignment" (e.g. ES6 method shorthand,
+ * `controller() {...}`) — `getObjectLiteralPropertyValue` alone conflates
+ * the two, both returning `undefined`. That's harmless for `scope`/
+ * `transclude`/`restrict` (a method-shorthand `scope` is nonsensical
+ * AngularJS that wouldn't function at runtime either way), but not for
+ * `controller`/`template`/`templateUrl`, where method shorthand is
+ * ordinary, valid JS a real directive could plausibly use. Confirmed by
+ * actually running a method-shorthand `controller() { this.x = 1; }`
+ * through the codemod before this fix: `matched: true`, an empty class
+ * body — the controller's entire logic silently dropped, not skipped.
+ */
+function getObjectLiteralProperty(obj: ObjectLiteralExpression, name: string): { readonly present: boolean; readonly value: Node | undefined } {
+  const prop = obj.getProperty(name);
+  if (!prop) return { present: false, value: undefined };
+  return { present: true, value: Node.isPropertyAssignment(prop) ? prop.getInitializer() : undefined };
 }
 
 /** `false` is the AngularJS default for `scope`/`transclude` — only a truthy value (or presence at all, for `compile`/`link`) is a real opt-in worth flagging. */
@@ -137,7 +155,13 @@ function extractDdo(fn: WrappableFunction): ObjectLiteralExpression | undefined 
 function deriveSelector(directiveName: string, restrictValue: Node | undefined): string {
   const restrict = restrictValue && Node.isStringLiteral(restrictValue) ? restrictValue.getLiteralText() : 'EA';
   const kebab = toKebabCase(directiveName);
-  return RESTRICT_ATTRIBUTE_ONLY.test(restrict) ? `[${kebab}]` : kebab;
+  // Element-selector whenever 'E' is present (the common real shape, and
+  // AngularJS's own default when `restrict` is absent) or as the safe
+  // fallback for restrict values that name neither 'E' nor 'A' (bare 'C'/
+  // 'M', both obscure and deprecated); attribute-selector only when 'A'
+  // is present without 'E' — 'A' and 'AC' alike, not just a pure-'A'
+  // string as an earlier version of this check required.
+  return restrict.includes('A') && !restrict.includes('E') ? `[${kebab}]` : kebab;
 }
 
 export function transformDirectiveToComponent(sourceText: string): CodemodResult {
@@ -207,14 +231,15 @@ export function transformDirectiveToComponent(sourceText: string): CodemodResult
       continue;
     }
 
-    const controllerValue = getObjectLiteralPropertyValue(ddo, 'controller');
+    const controllerProp = getObjectLiteralProperty(ddo, 'controller');
     let controllerFn: WrappableFunction | undefined;
-    if (controllerValue) {
-      if (Node.isFunctionExpression(controllerValue) || Node.isArrowFunction(controllerValue)) {
-        controllerFn = controllerValue;
+    if (controllerProp.present) {
+      const { value } = controllerProp;
+      if (value && (Node.isFunctionExpression(value) || Node.isArrowFunction(value))) {
+        controllerFn = value;
       } else {
         skipReasons.push(
-          `${directiveName}: controller is a string or external reference — not resolvable within a single file`
+          `${directiveName}: controller is a string, external reference, or an unsupported shape (e.g. method shorthand) — not resolvable within a single file`
         );
         continue;
       }
@@ -225,21 +250,21 @@ export function transformDirectiveToComponent(sourceText: string): CodemodResult
       continue;
     }
 
-    const templateValue = getObjectLiteralPropertyValue(ddo, 'template');
-    const templateUrlValue = getObjectLiteralPropertyValue(ddo, 'templateUrl');
+    const templateProperty = getObjectLiteralProperty(ddo, 'template');
+    const templateUrlProperty = getObjectLiteralProperty(ddo, 'templateUrl');
     let templateProp: string | undefined;
-    if (templateValue) {
-      if (!Node.isStringLiteral(templateValue)) {
+    if (templateProperty.present) {
+      if (!templateProperty.value || !Node.isStringLiteral(templateProperty.value)) {
         skipReasons.push(`${directiveName}: template is not a plain string literal — not safely transformable`);
         continue;
       }
-      templateProp = `template: ${templateValue.getText()}`;
-    } else if (templateUrlValue) {
-      if (!Node.isStringLiteral(templateUrlValue)) {
+      templateProp = `template: ${templateProperty.value.getText()}`;
+    } else if (templateUrlProperty.present) {
+      if (!templateUrlProperty.value || !Node.isStringLiteral(templateUrlProperty.value)) {
         skipReasons.push(`${directiveName}: templateUrl is not a plain string literal — not safely transformable`);
         continue;
       }
-      templateProp = `templateUrl: ${templateUrlValue.getText()}`;
+      templateProp = `templateUrl: ${templateUrlProperty.value.getText()}`;
     }
 
     const decoratorName = templateProp ? 'Component' : 'Directive';
