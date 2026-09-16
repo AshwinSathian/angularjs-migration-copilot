@@ -27,6 +27,13 @@ import { Project } from 'ts-morph';
  *   own globals and injected service names are untyped in this
  *   deliberately minimal compile context; real projects have `@types/
  *   angular` or equivalent.
+ * - 2552 (`Cannot find name 'Input'. Did you mean 'oninput'?`) — the same
+ *   undefined-decorator-identifier case as 2304 above (pattern #9's
+ *   `@Input()`, added alongside `@Component`/`@Directive`'s own 2304),
+ *   just a different code TypeScript happens to choose when an unrelated
+ *   global (`GlobalEventHandlers.oninput`) is a close-enough spelling
+ *   match to suggest — confirmed by direct execution, not assumed from
+ *   the diagnostic message alone.
  * - 2683 (`'this' implicitly has type 'any'`) — two distinct sources, both
  *   pre-existing characteristics of the *original* AngularJS source, not
  *   something a codemod's own added code (the class wrapper, the
@@ -45,7 +52,7 @@ import { Project } from 'ts-morph';
  *   boundary rather than something to transform), so it's exactly as
  *   inherent to this pattern family's current scope as 2339 above.
  */
-const IGNORED_DIAGNOSTIC_CODES = new Set([2339, 2304, 2571, 2683, 7006, 7034]);
+const IGNORED_DIAGNOSTIC_CODES = new Set([2339, 2304, 2552, 2571, 2683, 7006, 7034]);
 
 export function assertCompiles(outputSource: string): void {
   const project = new Project({

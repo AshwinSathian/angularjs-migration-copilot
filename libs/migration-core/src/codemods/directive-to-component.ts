@@ -77,11 +77,12 @@ interface RawMatch {
   readonly topStmtStart: number;
 }
 
-function toPascalCase(name: string): string {
+/** Exported for reuse by pattern #9 (`bindings-to-input.ts`), which builds the same class-name/selector shapes for `.component()` registrations. */
+export function toPascalCase(name: string): string {
   return name.length === 0 ? name : name.charAt(0).toUpperCase() + name.slice(1);
 }
 
-function toKebabCase(name: string): string {
+export function toKebabCase(name: string): string {
   return name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
 }
 
@@ -103,7 +104,7 @@ function getObjectLiteralPropertyValue(obj: ObjectLiteralExpression, name: strin
  * through the codemod before this fix: `matched: true`, an empty class
  * body — the controller's entire logic silently dropped, not skipped.
  */
-function getObjectLiteralProperty(obj: ObjectLiteralExpression, name: string): { readonly present: boolean; readonly value: Node | undefined } {
+export function getObjectLiteralProperty(obj: ObjectLiteralExpression, name: string): { readonly present: boolean; readonly value: Node | undefined } {
   const prop = obj.getProperty(name);
   if (!prop) return { present: false, value: undefined };
   return { present: true, value: Node.isPropertyAssignment(prop) ? prop.getInitializer() : undefined };
