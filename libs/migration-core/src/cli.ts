@@ -5,6 +5,7 @@ import { Command } from 'commander';
 import {
   transformArrayStyleDiToConstructor,
   transformControllerAsToClass,
+  transformDirectiveToComponent,
   transformScopeAssignmentToClassProperty,
   type CodemodResult,
 } from './codemods/index.js';
@@ -16,6 +17,7 @@ const CODEMODS: Record<string, (sourceText: string) => CodemodResult> = {
   'array-di-to-constructor': transformArrayStyleDiToConstructor,
   'scope-assignment-to-class-property': transformScopeAssignmentToClassProperty,
   'controlleras-to-class': transformControllerAsToClass,
+  'directive-to-component': transformDirectiveToComponent,
 };
 
 const program = new Command();
