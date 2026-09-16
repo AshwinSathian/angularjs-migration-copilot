@@ -134,9 +134,15 @@ function hasSelfReference(transformFn: WrappableFunction): boolean {
   if (!Node.isFunctionExpression(transformFn)) return false;
   const nameNode = transformFn.getNameNode();
   if (!nameNode) return false;
+  // The name node itself is a descendant of the FunctionExpression and
+  // trivially resolves to its own declaration — excluded so a harmless
+  // named function (no recursive call anywhere in its body) isn't
+  // mistaken for a self-referencing one, found by adversarial review and
+  // confirmed by direct execution: an earlier version of this check
+  // rejected every named returned function unconditionally.
   return transformFn
     .getDescendantsOfKind(SyntaxKind.Identifier)
-    .some((identifier) => resolvesUniquelyTo(identifier, [transformFn]));
+    .some((identifier) => identifier !== nameNode && resolvesUniquelyTo(identifier, [transformFn]));
 }
 
 export function transformFilterToPipe(sourceText: string): CodemodResult {

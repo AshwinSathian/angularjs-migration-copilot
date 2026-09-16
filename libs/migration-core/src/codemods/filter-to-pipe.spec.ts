@@ -284,6 +284,29 @@ describe('transformFilterToPipe', () => {
     expect(result.reason).toContain('own name');
   });
 
+  it('does not skip a harmless named function expression that never references its own name', () => {
+    // The name node of a named function expression is itself a descendant
+    // of the function and trivially "resolves to itself" — hasSelfReference
+    // must exclude it, or every named (non-recursive) returned function
+    // would be wrongly rejected as self-referencing.
+    const before = [
+      "angular.module('app').filter('formatDate', formatDate);",
+      '',
+      'function formatDate(dateUtil) {',
+      '  return function niceDate(input) {',
+      '    return dateUtil.format(input);',
+      '  };',
+      '}',
+    ].join('\n');
+
+    const result = transformFilterToPipe(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).toContain('class FormatDatePipe {');
+    expect(result.output).toContain('return this.dateUtil.format(input);');
+  });
+
   it('does not match a file with no .filter() registrations', () => {
     const before = "angular.module('app').service('foo', function () {});";
 
