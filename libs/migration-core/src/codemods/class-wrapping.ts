@@ -481,8 +481,22 @@ export function findNestedDeletionConflicts(items: readonly NestingCheckItem[]):
  * its outermost (last-in-source) call first during traversal, so sorting
  * by each call's own method-name-token position afterward restores true
  * source order before any candidate decision is made.
+ *
+ * `nestingConflictClassNames` is returned alongside `matches`, not
+ * silently dropped, even though a conflicting match is still excluded
+ * from `matches` itself (same silent-exclusion precedent as every other
+ * case in this function where resolving a match turns out to be
+ * ambiguous). Without it, a caller whose *only* real candidate happened
+ * to be nesting-conflicted had no way to tell "the idiom wasn't there"
+ * apart from "the idiom was there but got rejected for an unrelated
+ * reason," and fell back to the generic "not found" reason even though
+ * something real was found — a misleading-reason gap a later adversarial
+ * review round caught, not a hypothetical.
  */
-export function collectBareFunctionControllerMatches(project: Project): BareFunctionControllerMatch[] {
+export function collectBareFunctionControllerMatches(project: Project): {
+  readonly matches: readonly BareFunctionControllerMatch[];
+  readonly nestingConflictClassNames: readonly string[];
+} {
   const rawMatches: BareFunctionControllerMatch[] = [];
 
   forEachPropertyAccessCall(project, (call: CallExpression, expression: PropertyAccessExpression, sourceFile: SourceFile) => {
@@ -555,7 +569,10 @@ export function collectBareFunctionControllerMatches(project: Project): BareFunc
   }));
   const conflicting = findNestedDeletionConflicts(items);
 
-  return sorted.filter((_, i) => !conflicting.has(i));
+  return {
+    matches: sorted.filter((_, i) => !conflicting.has(i)),
+    nestingConflictClassNames: sorted.filter((_, i) => conflicting.has(i)).map((m) => m.className),
+  };
 }
 
 /**
@@ -602,6 +619,33 @@ export function buildClassSpliceEdits(
     insertion: { pos: match.topStmtStart, text: classText },
     replacements: [{ pos: match.fn.getStart(), end: match.fn.getEnd(), replacement: match.className }],
   };
+}
+
+/**
+ * The `matched: false` `reason` string for a pattern whose candidate loop
+ * ended with nothing to transform — shared by both `collectBareFunctionControllerMatches`
+ * callers (patterns #1/#2) so the fallback reason honestly distinguishes
+ * "the idiom was never there" from "the idiom was there but every
+ * instance got rejected," rather than always falling back to the same
+ * generic "not found" message regardless of which is true. Found missing
+ * by adversarial review: a file whose *only* real candidate was silently
+ * dropped by `collectBareFunctionControllerMatches`'s own nesting-conflict
+ * filter reported the generic reason, which is factually wrong — the
+ * idiom genuinely was found, just rejected for an unrelated,
+ * corruption-avoidance reason.
+ */
+export function buildNoMatchReason(
+  skipReasons: readonly string[],
+  nestingConflictClassNames: readonly string[],
+  genericReason: string
+): string {
+  if (skipReasons.length > 0) return skipReasons.join('; ');
+  if (nestingConflictClassNames.length > 0) {
+    return nestingConflictClassNames
+      .map((name) => `${name}: deleting/replacing it would also corrupt another registration nested inside it — not safely transformable`)
+      .join('; ');
+  }
+  return genericReason;
 }
 
 export interface PositionEdit {

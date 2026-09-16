@@ -122,6 +122,16 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
     if (element && (Node.isFunctionExpression(element) || Node.isArrowFunction(element))) {
       resolvedFn = element;
     } else if (element && Node.isIdentifier(element)) {
+      // Unlike `collectBareFunctionControllerMatches`'s bare-function
+      // path, this branch doesn't require `namedFn.getName() === className`
+      // — deliberately, not an oversight. That check exists there because
+      // the call site keeps referencing the function by its own original
+      // identifier (`.controller('X', X)`), so a name mismatch could leave
+      // a dangling reference once the declaration is deleted. Here the
+      // *entire array* (`arrayStart`..`arrayEnd`, including this
+      // identifier) is always replaced by `className` below, so the
+      // function's own original name never survives into the output
+      // regardless of whether it matches the registration string.
       const namedFn = resolveNamedFunctionDeclaration(element);
       if (namedFn) {
         const injectAssignments = findInjectAssignmentStatements(sourceFile, namedFn);
