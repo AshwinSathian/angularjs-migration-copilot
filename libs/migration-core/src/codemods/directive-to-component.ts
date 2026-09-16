@@ -116,6 +116,37 @@ function isTruthyValue(value: Node | undefined): boolean {
 }
 
 /**
+ * `template`/`templateUrl` extraction, shared between pattern #4
+ * (`.directive`'s DDO) and pattern #9 (`.component()`'s definition
+ * object) — both read the identical pair of properties off an object
+ * literal the same way (prefer `template`, fall back to `templateUrl`,
+ * skip on anything but a plain string literal for whichever is present).
+ * Originally duplicated near-verbatim between the two files despite this
+ * same module already exporting three other helpers for exactly this
+ * "reuse rather than re-derive" reason — extracted here once the
+ * duplication was flagged by review, not written this way from the
+ * start.
+ */
+export function extractTemplateProp(obj: ObjectLiteralExpression, registrationName: string): { readonly templateProp: string | undefined } | { readonly skipReason: string } {
+  const templateProperty = getObjectLiteralProperty(obj, 'template');
+  const templateUrlProperty = getObjectLiteralProperty(obj, 'templateUrl');
+
+  if (templateProperty.present) {
+    if (!templateProperty.value || !Node.isStringLiteral(templateProperty.value)) {
+      return { skipReason: `${registrationName}: template is not a plain string literal — not safely transformable` };
+    }
+    return { templateProp: `template: ${templateProperty.value.getText()}` };
+  }
+  if (templateUrlProperty.present) {
+    if (!templateUrlProperty.value || !Node.isStringLiteral(templateUrlProperty.value)) {
+      return { skipReason: `${registrationName}: templateUrl is not a plain string literal — not safely transformable` };
+    }
+    return { templateProp: `templateUrl: ${templateUrlProperty.value.getText()}` };
+  }
+  return { templateProp: undefined };
+}
+
+/**
  * The factory function's body must be exactly one of the two shapes real
  * fixtures actually use — anything else (conditional returns, extra
  * statements using the factory's own injected deps) is ambiguous, not
@@ -251,22 +282,12 @@ export function transformDirectiveToComponent(sourceText: string): CodemodResult
       continue;
     }
 
-    const templateProperty = getObjectLiteralProperty(ddo, 'template');
-    const templateUrlProperty = getObjectLiteralProperty(ddo, 'templateUrl');
-    let templateProp: string | undefined;
-    if (templateProperty.present) {
-      if (!templateProperty.value || !Node.isStringLiteral(templateProperty.value)) {
-        skipReasons.push(`${directiveName}: template is not a plain string literal — not safely transformable`);
-        continue;
-      }
-      templateProp = `template: ${templateProperty.value.getText()}`;
-    } else if (templateUrlProperty.present) {
-      if (!templateUrlProperty.value || !Node.isStringLiteral(templateUrlProperty.value)) {
-        skipReasons.push(`${directiveName}: templateUrl is not a plain string literal — not safely transformable`);
-        continue;
-      }
-      templateProp = `templateUrl: ${templateUrlProperty.value.getText()}`;
+    const templateResult = extractTemplateProp(ddo, directiveName);
+    if ('skipReason' in templateResult) {
+      skipReasons.push(templateResult.skipReason);
+      continue;
     }
+    const { templateProp } = templateResult;
 
     const decoratorName = templateProp ? 'Component' : 'Directive';
     const className = `${toPascalCase(directiveName)}${decoratorName}`;

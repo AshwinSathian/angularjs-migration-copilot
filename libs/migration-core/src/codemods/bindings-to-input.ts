@@ -10,9 +10,10 @@ import {
   isValidClassName,
   nearestInsertionPointStart,
   resolveNamedFunctionDeclaration,
+  VALID_IDENTIFIER,
   type WrappableFunction,
 } from './class-wrapping.js';
-import { getObjectLiteralProperty, toKebabCase, toPascalCase } from './directive-to-component.js';
+import { extractTemplateProp, getObjectLiteralProperty, toKebabCase, toPascalCase } from './directive-to-component.js';
 import type { CodemodResult } from './types.js';
 
 /**
@@ -80,6 +81,7 @@ type BindingsResult = { readonly fields: readonly InputField[] } | { readonly sk
 
 function parseBindings(bindingsObj: ObjectLiteralExpression, componentName: string): BindingsResult {
   const fields: InputField[] = [];
+  const seenNames = new Set<string>();
 
   for (const prop of bindingsObj.getProperties()) {
     if (!Node.isPropertyAssignment(prop)) {
@@ -100,6 +102,35 @@ function parseBindings(bindingsObj: ObjectLiteralExpression, componentName: stri
         skipReason: `${componentName}: binding "${propName ?? prop.getText()}" does not have a plain string-literal mode — not safely transformable`,
       };
     }
+
+    // A quoted object-literal key (`'my-attr': '<'`) is legal AngularJS
+    // but the property name is emitted verbatim as the class field name
+    // (`@Input() my-attr: any;`) — not a valid identifier, so that output
+    // doesn't parse at all. Reserved words (`class`, `default`, ...) are
+    // deliberately *not* rejected here unlike `isValidClassName`: a class
+    // *field* name may be any reserved word unquoted (`class Foo { if:
+    // any; }` is legal TS/JS), unlike a class/variable *name*.
+    if (!VALID_IDENTIFIER.test(propName)) {
+      return {
+        skipReason: `${componentName}: binding "${propName}" is not a valid identifier — not safely transformable as a class field name`,
+      };
+    }
+
+    // A JS object literal permits duplicate keys (the last one wins at
+    // runtime) — syntactically legal, so ts-morph hands back a separate
+    // property node per occurrence rather than deduplicating. Emitting an
+    // `@Input()` field per occurrence would produce two declarations of
+    // the same class member, invalid TypeScript. Confirmed by actually
+    // running `bindings: { value: '<', value: '<' }` through this
+    // function before this check existed: `matched: true`, output with
+    // `@Input() value: any;` twice, `TS2300`. Treated as ambiguous —
+    // skip the whole registration rather than silently keep only one.
+    if (seenNames.has(propName)) {
+      return {
+        skipReason: `${componentName}: binding "${propName}" is declared more than once — ambiguous, not safely transformable`,
+      };
+    }
+    seenNames.add(propName);
 
     const modeText = initializer.getLiteralText();
     const match = ONE_WAY_BINDING.exec(modeText);
@@ -204,6 +235,23 @@ export function transformBindingsToInput(sourceText: string): CodemodResult {
       continue;
     }
 
+    // Template validation (which can still fail) must run *before*
+    // `className` is claimed in `usedClassNames` — claiming it first and
+    // validating template after left a skipped registration's class name
+    // permanently "used," wrongly rejecting a later, otherwise-valid
+    // registration sharing that name as a false collision. Confirmed by
+    // constructing exactly that (an invalid `widget` registration
+    // followed by a valid one) and running it through this function
+    // before this reorder: the valid second registration was rejected as
+    // "collides with an existing name," even though nothing real claimed
+    // it. Same ordering `transformDirectiveToComponent` already uses.
+    const templateResult = extractTemplateProp(definitionArg, componentName);
+    if ('skipReason' in templateResult) {
+      skipReasons.push(templateResult.skipReason);
+      continue;
+    }
+    const { templateProp } = templateResult;
+
     const className = `${toPascalCase(componentName)}Component`;
     if (!isValidClassName(className)) {
       skipReasons.push(`${componentName}: derived class name "${className}" is not a valid identifier — not safely transformable`);
@@ -214,23 +262,6 @@ export function transformBindingsToInput(sourceText: string): CodemodResult {
       continue;
     }
     usedClassNames.add(className);
-
-    const templateProperty = getObjectLiteralProperty(definitionArg, 'template');
-    const templateUrlProperty = getObjectLiteralProperty(definitionArg, 'templateUrl');
-    let templateProp: string | undefined;
-    if (templateProperty.present) {
-      if (!templateProperty.value || !Node.isStringLiteral(templateProperty.value)) {
-        skipReasons.push(`${componentName}: template is not a plain string literal — not safely transformable`);
-        continue;
-      }
-      templateProp = `template: ${templateProperty.value.getText()}`;
-    } else if (templateUrlProperty.present) {
-      if (!templateUrlProperty.value || !Node.isStringLiteral(templateUrlProperty.value)) {
-        skipReasons.push(`${componentName}: templateUrl is not a plain string literal — not safely transformable`);
-        continue;
-      }
-      templateProp = `templateUrl: ${templateUrlProperty.value.getText()}`;
-    }
 
     const selector = toKebabCase(componentName);
     const decoratorProps = [`selector: '${selector}'`, templateProp].filter((p): p is string => Boolean(p));

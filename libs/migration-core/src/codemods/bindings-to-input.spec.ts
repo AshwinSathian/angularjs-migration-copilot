@@ -145,6 +145,25 @@ describe('transformBindingsToInput', () => {
     expect(result.reason).toContain('label');
   });
 
+  it('skips a bindings object with a duplicate key', () => {
+    // A JS object literal permits duplicate keys — syntactically legal,
+    // so this can't just be assumed impossible.
+    const before = [
+      "angular.module('app').component('widget', {",
+      '  bindings: {',
+      "    value: '<',",
+      "    value: '<'",
+      '  }',
+      '});',
+    ].join('\n');
+
+    const result = transformBindingsToInput(before);
+
+    assertUnmatched(result);
+    expect(result.reason).toContain('value');
+    expect(result.reason).toContain('more than once');
+  });
+
   it('skips a method-shorthand binding entry', () => {
     const before = [
       "angular.module('app').component('widget', {",
@@ -188,6 +207,53 @@ describe('transformBindingsToInput', () => {
 
     assertUnmatched(result);
     expect(result.reason).toContain('same name as a controller dependency');
+  });
+
+  it('skips a binding whose key is not a valid identifier', () => {
+    // Legal AngularJS (a quoted object-literal key), but the property name
+    // is emitted verbatim as the class field name and "my-attr" doesn't
+    // parse as one.
+    const before = [
+      "angular.module('app').component('widget', {",
+      '  bindings: {',
+      "    'my-attr': '<'",
+      '  }',
+      '});',
+    ].join('\n');
+
+    const result = transformBindingsToInput(before);
+
+    assertUnmatched(result);
+    expect(result.reason).toContain('my-attr');
+    expect(result.reason).toContain('not a valid identifier');
+  });
+
+  it('does not let a skipped registration permanently claim its class name for a later, valid one sharing it', () => {
+    // The first `widget` fails on its unsupported (function-valued)
+    // template; the second is otherwise identical but has no template at
+    // all, and must still succeed rather than being rejected as a false
+    // "duplicate name" collision against the first's already-abandoned
+    // attempt.
+    const before = [
+      "angular.module('app').component('widget', {",
+      '  bindings: {',
+      "    value: '<'",
+      '  },',
+      '  template: function () {}',
+      '});',
+      "angular.module('app').component('widget', {",
+      '  bindings: {',
+      "    value: '<'",
+      '  }',
+      '});',
+    ].join('\n');
+
+    const result = transformBindingsToInput(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).toContain('@Input() value: any;');
+    expect(result.warnings?.some((w) => w.includes('template is not a plain string literal'))).toBe(true);
   });
 
   it('surfaces a warning for a sibling registration that is skipped, without dropping the successful one', () => {
