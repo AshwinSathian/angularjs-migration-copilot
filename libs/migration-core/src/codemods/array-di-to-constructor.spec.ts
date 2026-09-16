@@ -466,4 +466,39 @@ describe('transformArrayStyleDiToConstructor', () => {
     expect(result.output).toContain('class Inner {');
     expect(result.output).toContain("angular.module('app').controller('Outer', ['$scope', function ($scope) {");
   });
+
+  it('does not let a nesting-conflicted candidate block an unrelated, later registration sharing its name', () => {
+    // Found by adversarial review: name deduplication used to happen in
+    // the same pass that resolved each candidate, before nesting-conflict
+    // filtering ran — so a candidate that was *always* going to be
+    // dropped for nesting still claimed its class name first, wrongly
+    // rejecting a completely independent, perfectly valid later
+    // registration that happened to share it. Confirmed by actually
+    // running this exact input before the fix: the second `Foo` (which
+    // has nothing to do with `ctrlImpl`/`Nested`) was rejected as a
+    // "duplicate" even though the first `Foo` was never going to survive
+    // anyway. Fixed by deferring name-dedup until after nesting-conflict
+    // filtering, mirroring `collectBareFunctionControllerMatches`'s own
+    // filter-before-return order.
+    const before = [
+      'function ctrlImpl($scope) {',
+      '  $scope.x = 1;',
+      "  angular.module('app').service('Nested', ['$http', nestedFn]);",
+      '}',
+      'function nestedFn($http) {}',
+      "angular.module('app').controller('Foo', ['$scope', ctrlImpl]);",
+      "angular.module('app').controller('Foo', ['$scope', function ($scope) { $scope.y = 2; }]);",
+    ].join('\n');
+
+    const result = transformArrayStyleDiToConstructor(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).toContain('class Nested {');
+    expect(result.output).toContain('class Foo {');
+    expect(result.output).toContain('$scope.y = 2;');
+    expect(result.warnings).toEqual([
+      'Foo: deleting the referenced function would also corrupt another registration nested inside it — not safely transformable',
+    ]);
+  });
 });

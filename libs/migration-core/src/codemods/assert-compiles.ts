@@ -27,15 +27,23 @@ import { Project } from 'ts-morph';
  *   own globals and injected service names are untyped in this
  *   deliberately minimal compile context; real projects have `@types/
  *   angular` or equivalent.
- * - 2683 (`'this' implicitly has type 'any'`) — can only occur inside a
- *   plain, untransformed AngularJS function using `this.x = y`; a
- *   codemod-emitted `class`'s own members never trigger it, `this` is
- *   always typed inside one. Only surfaces when a nesting-conflict check
- *   (`findNestedDeletionConflicts`, class-wrapping.ts) correctly leaves an
- *   outer candidate's original function untouched — whether that
- *   candidate was a named declaration or an inline literal, both are
- *   covered — the same "characteristic of the original idiom, not the
- *   codemod's output" reasoning as 2339 above, not a new class of bug.
+ * - 2683 (`'this' implicitly has type 'any'`) — two distinct sources, both
+ *   pre-existing characteristics of the *original* AngularJS source, not
+ *   something a codemod's own added code (the class wrapper, the
+ *   constructor signature) ever introduces itself: (1) a plain,
+ *   untransformed function left untouched by a nesting-conflict skip
+ *   (`findNestedDeletionConflicts`, class-wrapping.ts) still using
+ *   `this.x = y`; (2) a nested plain function/IIFE using `this` (e.g. an
+ *   `angular.forEach(items, function (item) { this.foo(item); })`
+ *   callback) that a class-wrapping pattern copies verbatim into the
+ *   emitted class's constructor body — confirmed by direct ts-morph
+ *   probe that this genuinely fires *inside* codemod-emitted class output,
+ *   not just inside an untouched original, correcting an earlier version
+ *   of this comment that claimed otherwise. Not fixed here: none of these
+ *   codemods rewrite a nested function's own `this` usage (out of scope —
+ *   the same reason `isInsideThisRebindingBoundary` treats it as a
+ *   boundary rather than something to transform), so it's exactly as
+ *   inherent to this pattern family's current scope as 2339 above.
  */
 const IGNORED_DIAGNOSTIC_CODES = new Set([2339, 2304, 2571, 2683, 7006, 7034]);
 

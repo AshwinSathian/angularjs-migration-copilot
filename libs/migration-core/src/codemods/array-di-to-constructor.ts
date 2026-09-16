@@ -102,9 +102,14 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
 
   rawMatches.sort((a, b) => a.sortKey - b.sortKey);
 
-  const candidates: Candidate[] = [];
+  // Resolved but not yet deduped by name against sibling candidates — that
+  // check is deferred to after nesting-conflict filtering below (see the
+  // comment there for why: claiming a name here, before a nesting
+  // conflict can reject the candidate that claimed it, would wrongly
+  // block an unrelated, otherwise-valid registration later in the file
+  // from using that same name once it's actually free again).
+  const resolved: Candidate[] = [];
   const skipReasons: string[] = [];
-  const usedClassNames = new Set<string>();
 
   for (const match of rawMatches) {
     const { className, fn: element } = match;
@@ -161,12 +166,12 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
       continue;
     }
 
-    // A named declaration's own pre-existing binding isn't a real
-    // collision — it's the transform's own target, about to be deleted.
-    if (
-      usedClassNames.has(className) ||
-      hasExistingTopLevelBinding(sourceFile, className, namedDecl ? resolvedFn : undefined)
-    ) {
+    // Only a pre-existing binding *already in the file* is checked here —
+    // a collision with a sibling pattern-#3 candidate is checked later,
+    // after nesting-conflict filtering (see below). A named declaration's
+    // own pre-existing binding isn't a real collision either way — it's
+    // the transform's own target, about to be deleted.
+    if (hasExistingTopLevelBinding(sourceFile, className, namedDecl ? resolvedFn : undefined)) {
       skipReasons.push(`${className}: duplicate registration name in this file — ambiguous which one to keep, not safely transformable`);
       continue;
     }
@@ -189,8 +194,7 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
       continue;
     }
 
-    usedClassNames.add(className);
-    candidates.push({
+    resolved.push({
       className,
       fn: resolvedFn,
       topStmtStart: match.topStmtStart,
@@ -213,7 +217,7 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
   // assumes edits are disjoint; a nested range breaks that assumption and
   // corrupts the sibling's edits while still reporting success. See
   // `findNestedDeletionConflicts`'s own docstring for the full repro.
-  const nestingItems: NestingCheckItem[] = candidates.map((c) => ({
+  const nestingItems: NestingCheckItem[] = resolved.map((c) => ({
     protectedPositions: [
       c.topStmtStart,
       c.arrayStart,
@@ -233,13 +237,31 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
     ],
   }));
   const conflictingIndices = findNestedDeletionConflicts(nestingItems);
-  const survivingCandidates = candidates.filter((c, i) => {
+  const nonConflicting = resolved.filter((c, i) => {
     if (!conflictingIndices.has(i)) return true;
     skipReasons.push(
       `${c.className}: deleting the referenced function would also corrupt another registration nested inside it — not safely transformable`
     );
     return false;
   });
+
+  // Name deduplication runs last, over only the candidates that survived
+  // every other rejection — a candidate that was going to be dropped for
+  // an unrelated reason (nesting conflict, above) must never claim a name
+  // and block a later, otherwise-valid registration from using it. Found
+  // by adversarial review, confirmed by actually constructing a file
+  // where an unrelated `Foo` was wrongly rejected as a "duplicate" of a
+  // different `Foo` that was itself already being dropped for nesting.
+  const usedClassNames = new Set<string>();
+  const survivingCandidates: Candidate[] = [];
+  for (const c of nonConflicting) {
+    if (usedClassNames.has(c.className)) {
+      skipReasons.push(`${c.className}: duplicate registration name in this file — ambiguous which one to keep, not safely transformable`);
+      continue;
+    }
+    usedClassNames.add(c.className);
+    survivingCandidates.push(c);
+  }
 
   if (survivingCandidates.length === 0) {
     return {
