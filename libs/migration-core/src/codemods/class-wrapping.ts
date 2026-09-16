@@ -407,51 +407,58 @@ export function hasOtherReferences(fn: FunctionDeclaration, expectedReference: N
 
 /**
  * One item's protected positions (every edit position it needs, both
- * insertion and replacement/deletion) plus, if it deletes a named
- * function declaration, that declaration's own `[start, end)` range.
+ * insertion and replacement/deletion) plus every `[start, end)` range its
+ * own edits remove or replace outright — a named declaration's deletion
+ * range, `$inject` statement ranges, *and* an inline function literal's
+ * own replaced span (the whole literal, body included, is replaced by
+ * the bare class name — just as much a "this text is gone" edit as a
+ * named declaration's deletion, even though nothing is textually
+ * deleted from the file elsewhere).
  */
 export interface NestingCheckItem {
   readonly protectedPositions: readonly number[];
-  readonly namedDeclRange?: { readonly start: number; readonly end: number };
+  readonly deletedRanges: readonly { readonly start: number; readonly end: number }[];
 }
 
 /**
- * Indices (into `items`) of every item whose `namedDeclRange` strictly
- * contains another item's protected position — a structural conflict
- * `hasOtherReferences`'s per-candidate, self-only check cannot see, since
- * it only knows about one candidate's own function at a time, not the
- * full accepted set.
+ * Indices (into `items`) of every item with a `deletedRanges` entry that
+ * strictly contains another item's protected position — a structural
+ * conflict `hasOtherReferences`'s per-candidate, self-only check cannot
+ * see, since it only knows about one candidate's own function at a time,
+ * not the full accepted set.
  *
  * `applyEdits` assumes every edit's `[pos, end)` is either disjoint from
  * every other edit or exactly equal (the same-position insertion case
  * `groupInsertionsByPosition` already merges) — never one *containing*
- * another. A named-declaration candidate's own deletion range can
- * violate that assumption even when `hasOtherReferences` correctly finds
- * no *other* reference to that candidate's own function: nothing stops a
- * sibling candidate's registration call from being written *inside* that
- * function's body, referencing a completely different function. Deleting
- * the outer function then also deletes the text the sibling's insertion/
- * replacement edits are computed against, and `applyEdits` — which
- * slices using each edit's *original*-text offsets — corrupts the
- * output while still reporting `matched: true`. Confirmed by actually
- * constructing exactly that file (an outer `$scope.x = y` controller
- * whose body contains a second, unrelated `.controller(...)` call) and
- * running it through both the array-style-DI codemod and the
- * already-merged bare-function `.controller('X', X)` one — both produced
- * visibly garbled, brace-unbalanced output before this check existed.
- * The fix: reject the *outer* (containing) candidate entirely rather
- * than try to compute a correct-for-every-nested-sibling edit order —
- * same "skip when ambiguous" philosophy as everywhere else in this
- * module. The nested sibling itself is unaffected and still transforms
- * normally, since the outer function's declaration is now left in place.
+ * another. A candidate's own deleted/replaced range can violate that
+ * assumption even when `hasOtherReferences` correctly finds no *other*
+ * reference to that candidate's own function: nothing stops a sibling
+ * candidate's registration call from being written *inside* that range —
+ * inside a named declaration's body (ADR-034/035) or, just as corrupting,
+ * inside an inline function literal's own body, which gets replaced by
+ * the bare class name wholesale. Either way, deleting/replacing the
+ * outer range also destroys the text the sibling's own edits are
+ * computed against, and `applyEdits` — which slices using each edit's
+ * *original*-text offsets — corrupts the output while still reporting
+ * `matched: true`. Confirmed by actually constructing both shapes (an
+ * outer named-declaration controller and, found by a later review round,
+ * an outer *inline-literal* controller, each with a second, unrelated
+ * `.controller(...)` call nested in its body) and running them through
+ * both the array-style-DI codemod and the already-merged bare-function
+ * `.controller(...)` one — all four combinations produced visibly
+ * garbled, brace-unbalanced output before this check covered inline
+ * literals too. The fix: reject the *outer* (containing) candidate
+ * entirely rather than try to compute a correct-for-every-nested-sibling
+ * edit order — same "skip when ambiguous" philosophy as everywhere else
+ * in this module. The nested sibling itself is unaffected and still
+ * transforms normally, since the outer candidate's own transform is
+ * skipped and its source text is left exactly as written.
  */
 export function findNestedDeletionConflicts(items: readonly NestingCheckItem[]): ReadonlySet<number> {
   const conflicting = new Set<number>();
   items.forEach((item, i) => {
-    const range = item.namedDeclRange;
-    if (!range) return;
-    const hasConflict = items.some(
-      (other, j) => i !== j && other.protectedPositions.some((p) => p > range.start && p < range.end)
+    const hasConflict = item.deletedRanges.some((range) =>
+      items.some((other, j) => i !== j && other.protectedPositions.some((p) => p > range.start && p < range.end))
     );
     if (hasConflict) conflicting.add(i);
   });
@@ -528,16 +535,23 @@ export function collectBareFunctionControllerMatches(project: Project): BareFunc
   const sorted = rawMatches.sort((a, b) => a.sortKey - b.sortKey);
 
   // Same silent-exclusion precedent as the `namedFn`/`hasOtherReferences`
-  // checks above: a structurally-conflicting named-declaration match is
-  // treated as not safely recognized, not as a recognized-but-skipped
-  // candidate — consistent with how this function already handles every
-  // other case where resolving the named-reference shape turns out to be
-  // ambiguous.
+  // checks above: a structurally-conflicting match (named-declaration or
+  // inline-literal alike — see `findNestedDeletionConflicts`'s own
+  // docstring for why an inline literal's replaced span is just as much
+  // a conflict source) is treated as not safely recognized, not as a
+  // recognized-but-skipped candidate — consistent with how this function
+  // already handles every other case where resolving the shape turns out
+  // to be ambiguous.
   const items: NestingCheckItem[] = sorted.map((m) => ({
     protectedPositions: m.isNamedDeclaration
       ? [m.topStmtStart, m.fn.getStart(true), m.fn.getEnd(), ...m.injectStatements.flatMap((s) => [s.getStart(true), s.getEnd()])]
       : [m.topStmtStart, m.fn.getStart(), m.fn.getEnd()],
-    namedDeclRange: m.isNamedDeclaration ? { start: m.fn.getStart(true), end: m.fn.getEnd() } : undefined,
+    deletedRanges: m.isNamedDeclaration
+      ? [
+          { start: m.fn.getStart(true), end: m.fn.getEnd() },
+          ...m.injectStatements.map((s) => ({ start: s.getStart(true), end: s.getEnd() })),
+        ]
+      : [{ start: m.fn.getStart(), end: m.fn.getEnd() }],
   }));
   const conflicting = findNestedDeletionConflicts(items);
 

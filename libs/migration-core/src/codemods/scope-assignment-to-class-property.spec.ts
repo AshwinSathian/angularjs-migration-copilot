@@ -597,4 +597,30 @@ describe('transformScopeAssignmentToClassProperty', () => {
     expect(result.output).toContain('class otherFn {');
     expect(result.output).toContain('function MainCtrl($scope)');
   });
+
+  it('skips an outer registration whose inline function body contains a second registration nested inside it, but still transforms the inner one', () => {
+    // The bare-function-DI equivalent of array-di-to-constructor.spec.ts's
+    // mirrored test: `findNestedDeletionConflicts` originally only
+    // treated a *named-declaration* deletion range as a conflict source,
+    // missing that an inline function literal's own replaced span (the
+    // whole literal, body included) is corrupted by a sibling's nested
+    // edits exactly the same way. Confirmed by actually running this
+    // exact input before the fix.
+    const before = [
+      "angular.module('app').controller('Outer', function ($scope) {",
+      '  $scope.x = 1;',
+      "  angular.module('app').controller('Inner', function ($scope) {",
+      '    $scope.y = 2;',
+      '  });',
+      '});',
+    ].join('\n');
+
+    const result = transformScopeAssignmentToClassProperty(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).not.toContain('class Outer');
+    expect(result.output).toContain('class Inner {');
+    expect(result.output).toContain("angular.module('app').controller('Outer', function ($scope) {");
+  });
 });

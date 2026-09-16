@@ -31,10 +31,11 @@ import { Project } from 'ts-morph';
  *   plain, untransformed AngularJS function using `this.x = y`; a
  *   codemod-emitted `class`'s own members never trigger it, `this` is
  *   always typed inside one. Only surfaces when a nesting-conflict check
- *   (`findNestedDeletionConflicts`, class-wrapping.ts) correctly leaves
- *   an outer candidate's original function untouched — the same
- *   "characteristic of the original idiom, not the codemod's output"
- *   reasoning as 2339 above, not a new class of bug.
+ *   (`findNestedDeletionConflicts`, class-wrapping.ts) correctly leaves an
+ *   outer candidate's original function untouched — whether that
+ *   candidate was a named declaration or an inline literal, both are
+ *   covered — the same "characteristic of the original idiom, not the
+ *   codemod's output" reasoning as 2339 above, not a new class of bug.
  */
 const IGNORED_DIAGNOSTIC_CODES = new Set([2339, 2304, 2571, 2683, 7006, 7034]);
 

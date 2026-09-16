@@ -435,4 +435,35 @@ describe('transformArrayStyleDiToConstructor', () => {
       'MainCtrl: deleting the referenced function would also corrupt another registration nested inside it — not safely transformable',
     ]);
   });
+
+  it('skips an outer registration whose inline function body contains a second registration nested inside it, but still transforms the inner one', () => {
+    // A gap in the nesting-conflict fix above, found by a later
+    // adversarial review round: `findNestedDeletionConflicts` only
+    // treated a *named-declaration* deletion range as something a
+    // sibling candidate's edits could be corrupted by nesting inside.
+    // But an *inline* function/arrow literal candidate's own replaced
+    // span (the whole array, including the entire inline body) is just
+    // as much a "this text is gone" edit once it's replaced by the bare
+    // class name — confirmed by actually running this exact input before
+    // the fix: `matched: true` with visibly garbled, misaligned output
+    // (`angular.module('app').controller('Outer', Outerontroller('Inner'`
+    // ...). Fixed by making every candidate's own deleted/replaced range
+    // — not just a named declaration's — a conflict source in
+    // `findNestedDeletionConflicts` (class-wrapping.ts).
+    const before = [
+      "angular.module('app').controller('Outer', ['$scope', function ($scope) {",
+      "  angular.module('app').controller('Inner', ['$http', function ($http) {",
+      "    $http.get('/x');",
+      '  }]);',
+      '}]);',
+    ].join('\n');
+
+    const result = transformArrayStyleDiToConstructor(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).not.toContain('class Outer');
+    expect(result.output).toContain('class Inner {');
+    expect(result.output).toContain("angular.module('app').controller('Outer', ['$scope', function ($scope) {");
+  });
 });

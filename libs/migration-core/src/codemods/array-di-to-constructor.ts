@@ -190,13 +190,18 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
     });
   }
 
-  // A named-declaration candidate's own function body can contain a
-  // second, unrelated registration's call as one of its statements —
-  // `hasOtherReferences` only rules out an *other* reference to the same
-  // function, not a sibling candidate's edit positions sitting nested
-  // inside this candidate's own deletion range. `applyEdits` assumes
-  // edits are disjoint; a nested deletion range breaks that assumption
-  // and corrupts the sibling's edits while still reporting success. See
+  // A candidate's own function body — whether a separately-declared
+  // named function being deleted, or an inline literal whose entire span
+  // (including its body) gets replaced by the bare class name — can
+  // contain a second, unrelated registration's call as one of its
+  // statements. `hasOtherReferences` only rules out an *other* reference
+  // to the same named function, not a sibling candidate's edit positions
+  // sitting nested inside this candidate's own deleted/replaced range —
+  // and an inline literal's replaced range is just as much a conflict
+  // source as a named declaration's deletion range, even though nothing
+  // is textually *removed* from the file for the inline case. `applyEdits`
+  // assumes edits are disjoint; a nested range breaks that assumption and
+  // corrupts the sibling's edits while still reporting success. See
   // `findNestedDeletionConflicts`'s own docstring for the full repro.
   const nestingItems: NestingCheckItem[] = candidates.map((c) => ({
     protectedPositions: [
@@ -207,7 +212,15 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
         ? [c.namedDecl.declStart, c.namedDecl.declEnd, ...c.namedDecl.injectStatements.flatMap((s) => [s.getStart(true), s.getEnd()])]
         : []),
     ],
-    namedDeclRange: c.namedDecl ? { start: c.namedDecl.declStart, end: c.namedDecl.declEnd } : undefined,
+    deletedRanges: [
+      { start: c.arrayStart, end: c.arrayEnd },
+      ...(c.namedDecl
+        ? [
+            { start: c.namedDecl.declStart, end: c.namedDecl.declEnd },
+            ...c.namedDecl.injectStatements.map((s) => ({ start: s.getStart(true), end: s.getEnd() })),
+          ]
+        : []),
+    ],
   }));
   const conflictingIndices = findNestedDeletionConflicts(nestingItems);
   const survivingCandidates = candidates.filter((c, i) => {
