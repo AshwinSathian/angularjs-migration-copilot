@@ -41,10 +41,25 @@ export function isPlainAssignment(node: BinaryExpression): boolean {
  * correct here — unlike `resolveNamedFunctionDeclaration`'s deliberately
  * looser, type-filtered check, which exists specifically because it
  * *can't* require that (see that function's own docstring for why).
+ *
+ * An ES6 object-literal shorthand property (`{ layoutPaths }`, sugar for
+ * `{ layoutPaths: layoutPaths }`) is a special case: `identifier.getSymbol()`
+ * on its one identifier resolves to the `ShorthandPropertyAssignment`
+ * itself — the object literal's own property symbol — not the outer
+ * variable the shorthand reads, so a plain `getSymbol()` call silently
+ * fails to match here even though the identifier is a real reference to
+ * `targets`. Confirmed by adversarial review, then by direct execution
+ * (a probe script showing `getSymbol()`'s declarations for a shorthand
+ * identifier is `[ShorthandPropertyAssignment]`, never the referenced
+ * parameter) — not assumed from the API surface. `getValueSymbol()`
+ * (ts-morph's wrapper for `TypeChecker#getShorthandAssignmentValueSymbol`)
+ * is the correct resolution for this one shape.
  */
 export function resolvesUniquelyTo(identifier: Node, targets: readonly Node[]): boolean {
   if (!Node.isIdentifier(identifier)) return false;
-  const declarations = identifier.getSymbol()?.getDeclarations() ?? [];
+  const parent = identifier.getParent();
+  const symbol = Node.isShorthandPropertyAssignment(parent) ? parent.getValueSymbol() : identifier.getSymbol();
+  const declarations = symbol?.getDeclarations() ?? [];
   return declarations.length === 1 && targets.includes(declarations[0]);
 }
 
