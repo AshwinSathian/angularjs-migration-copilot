@@ -90,10 +90,41 @@ export function nearestInsertionPointStart(node: Node): number {
  * `collectBareFunctionControllerMatches`): replacing that declaration
  * in place with a same-named class isn't a real collision, it's the
  * transform's own target.
+ *
+ * Despite the name (kept for the smaller diff against every existing
+ * caller — `hasExistingBinding` would be the honest name now), this is
+ * **not** scoped to the source file's direct-child (top) level —
+ * `sourceFile.getFunction/getClass/getVariableDeclaration` originally
+ * were, which is a real, confirmed-by-execution bug: `nearestInsertionPointStart`
+ * deliberately inserts every insert-only pattern's new declaration
+ * *inside* the enclosing `(function () {...})()` IIFE block (62 of 66
+ * registration-bearing files across this project's own vendored fixtures
+ * use one), a scope the file-top-level-only check can never see into. A
+ * pre-existing, unrelated `var DashboardComponent = '...'` declared
+ * inside that same IIFE went completely undetected — the derived
+ * `component: DashboardComponent` reference silently pointed at the
+ * wrong binding instead of being rejected as a collision, and a
+ * pre-existing `var AppRoutes = '...'` in the same IIFE produced a real
+ * `TS2451` redeclaration once the codemod's own `const AppRoutes` landed
+ * next to it — both confirmed by actually running the compiled codemod
+ * against constructed repros, not assumed. Found by adversarial review
+ * against already-merged code (pattern #8, ADR-044), affecting every
+ * insert-only pattern that calls this function (#4/#9/#5/#8 alike), not
+ * just the one that happened to surface it. Fixed by searching every
+ * declaration in the file, not just the top level — broader than
+ * strictly necessary (a same-named declaration in a completely unrelated,
+ * far-away nested scope isn't a *real* collision either), but the same
+ * "skip when ambiguous, don't try to be precise" philosophy `hasOtherReferences`
+ * already applies elsewhere in this module: a false-positive "collision"
+ * costs one skipped, honestly-reported registration; a false-negative
+ * costs silently wrong or non-compiling output, which this codebase's own
+ * review history treats as the worse failure by a wide margin.
  */
 export function hasExistingTopLevelBinding(sourceFile: SourceFile, name: string, ignore?: Node): boolean {
-  const existing = sourceFile.getFunction(name) ?? sourceFile.getClass(name) ?? sourceFile.getVariableDeclaration(name);
-  return existing !== undefined && existing !== ignore;
+  const functions = sourceFile.getDescendantsOfKind(SyntaxKind.FunctionDeclaration).filter((d) => d.getName() === name);
+  const classes = sourceFile.getDescendantsOfKind(SyntaxKind.ClassDeclaration).filter((d) => d.getName() === name);
+  const variables = sourceFile.getDescendantsOfKind(SyntaxKind.VariableDeclaration).filter((d) => d.getName() === name);
+  return [...functions, ...classes, ...variables].some((d) => d !== ignore);
 }
 
 /**

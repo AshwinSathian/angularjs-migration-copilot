@@ -368,17 +368,32 @@ export function transformRoutesToRouterConfig(sourceText: string): CodemodResult
     const { fn, providerParam, kind } = match;
     const routeCalls = collectRouteCalls(fn, providerParam, kind);
 
-    // Computed once, up front — `routesVarName` depends only on
-    // `moduleName`, known before any route call is even walked. Checking
-    // it here (rather than after building every entry) avoids validating
-    // it twice, and the distinct messages are still preserved rather than
-    // collapsed into one.
+    // Computed and acted on *before* any route call is walked —
+    // `routesVarName` depends only on `moduleName`, known up front, and a
+    // registration whose routes-constant name is already doomed (invalid
+    // or colliding) can never be emitted regardless of what its route
+    // calls contain. Checking (and skipping) here, not just computing
+    // here, avoids two real problems a later check would have: wasted
+    // work walking every route call's own `hasExistingTopLevelBinding`
+    // scan (a full-file `getDescendantsOfKind` pass, `class-wrapping.ts`)
+    // for entries that get thrown away regardless, and misleading
+    // diagnostics — an unrelated per-entry skip reason (a bad `url`, an
+    // unresolvable name) surviving into `warnings` alongside the real,
+    // only-actionable cause (the name collision) as if both independently
+    // mattered, when fixing the entry's own issue would have changed
+    // nothing. Found by adversarial review, confirmed by reasoning through
+    // the concrete two-registration-both-deriving-`AppRoutes` scenario the
+    // review constructed.
     const routesVarName = deriveRoutesVarName(moduleName);
     const routesVarNameSkipReason = !isValidClassName(routesVarName)
       ? `${routesVarName}: derived routes constant name is not a valid identifier — not safely transformable`
       : usedNames.has(routesVarName) || hasExistingTopLevelBinding(sourceFile, routesVarName)
         ? `${routesVarName}: derived routes constant name collides with an existing name in this file — ambiguous, not safely transformable`
         : undefined;
+    if (routesVarNameSkipReason) {
+      skipReasons.push(routesVarNameSkipReason);
+      continue;
+    }
 
     const whenEntries: string[] = [];
     let otherwiseEntry: string | undefined;
