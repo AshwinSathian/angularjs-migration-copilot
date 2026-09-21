@@ -387,4 +387,41 @@ describe('transformHttpThenToHttpClient', () => {
     assertUnmatched(result);
     expect(result.reason).toContain('constructor');
   });
+
+  it('does not add a body parameter for a config-object GET with a stray "data" key — GET has no body slot to pass it to', () => {
+    // Found by adversarial review: an earlier version set hasBody from
+    // the presence of `data` alone, regardless of verb, so a non-body
+    // verb with a `data` key scaffolded a body parameter that was
+    // declared but never actually passed to this.http.get(...) — silent
+    // data loss for any caller supplying it.
+    const before = [
+      "angular.module('app').controller('A', function ($http) {",
+      '  function loadUsers() {',
+      "    $http({ method: 'GET', url: '/api/x', data: { foo: 1 } }).then(function () {});",
+      '  }',
+      '  loadUsers();',
+      '});',
+    ].join('\n');
+
+    const result = transformHttpThenToHttpClient(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).toContain('loadUsers(): Observable<unknown> {');
+    expect(result.output).toContain("return this.http.get('/api/x');");
+  });
+
+  it('renders a config-object call\'s skip reason in config-object syntax, not shorthand', () => {
+    const before = [
+      "angular.module('app').controller('A', function ($http) {",
+      "  (function () { $http({ method: 'get', url: '/api/posts' }).then(function () {}); })();",
+      '});',
+    ].join('\n');
+
+    const result = transformHttpThenToHttpClient(before);
+
+    assertUnmatched(result);
+    expect(result.reason).toContain("$http({ method: 'get', url: '/api/posts' })");
+    expect(result.reason).not.toContain('$http.get(');
+  });
 });

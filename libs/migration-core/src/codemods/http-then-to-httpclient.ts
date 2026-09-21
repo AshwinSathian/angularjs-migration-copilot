@@ -179,15 +179,27 @@ interface HttpMatch {
   readonly url: string;
   readonly hasParams: boolean;
   /**
-   * Whether the original call actually passed body/`data`, not just
-   * whether the verb is one of POST/PUT/PATCH — found by adversarial
-   * review: basing the generated method's `body: unknown` parameter on
-   * the verb alone forced callers to supply a body argument even for a
-   * real no-payload trigger POST (`$http.post('/api/trigger')`), the same
-   * "only add what was actually present" treatment `hasParams` already
-   * gets.
+   * Whether the original call actually passed body/`data` *and* the verb
+   * is one of POST/PUT/PATCH — always `false` for a no-body verb (GET/
+   * DELETE/HEAD), regardless of a stray `data` key in a config object.
+   * Found by adversarial review, confirmed by direct execution: an
+   * earlier version set this from `data`'s presence alone, so a
+   * config-object GET with a (nonstandard, but not rejected upstream)
+   * `data` property scaffolded a `body: unknown` parameter that was never
+   * actually passed to `this.http.get(...)` — declared but silently
+   * dropped, the exact class of bug the reassignment/params fixes in the
+   * immediately preceding commit exist to close, just for `body` instead.
+   * Basing the generated method's `body: unknown` parameter on the verb
+   * *alone* has the opposite problem (found earlier in the same review
+   * pass): it forces callers to supply a body argument even for a real
+   * no-payload trigger POST (`$http.post('/api/trigger')`) — this field
+   * requires both conditions together, the same "only add what was
+   * actually present, only where it's actually usable" treatment
+   * `hasParams` already gets.
    */
   readonly hasBody: boolean;
+  /** Renders the right skip-message shape for this match's actual source syntax — found missing by adversarial review: a config-object call's skip reason previously always rendered in shorthand (`$http.<method>(...)`) syntax, misrepresenting a form that isn't actually present anywhere in the source file being diagnosed. */
+  readonly sourceKind: 'config-object' | 'shorthand';
   readonly sortKey: number;
 }
 
@@ -299,7 +311,8 @@ export function transformHttpThenToHttpClient(sourceText: string): CodemodResult
         method,
         url,
         hasParams: getObjectLiteralProperty(config, 'params').present,
-        hasBody: getObjectLiteralProperty(config, 'data').present,
+        hasBody: WITH_BODY_METHODS.has(method) && getObjectLiteralProperty(config, 'data').present,
+        sourceKind: 'config-object',
         sortKey: node.getStart(),
       });
       return;
@@ -335,6 +348,7 @@ export function transformHttpThenToHttpClient(sourceText: string): CodemodResult
         url,
         hasParams: hasParamsConfig(verb, args),
         hasBody: WITH_BODY_METHODS.has(verb) && args.length >= 2,
+        sourceKind: 'shorthand',
         sortKey: node.getStart(),
       });
     }
@@ -363,9 +377,16 @@ export function transformHttpThenToHttpClient(sourceText: string): CodemodResult
   for (const match of matches) {
     const enclosingFn = findEnclosingFunction(match.call);
     const methodName = enclosingFn && deriveMethodName(enclosingFn);
+    // Renders the call the way it's actually written in this file — found
+    // missing by adversarial review: a config-object call's skip reason
+    // previously always rendered in shorthand (`$http.<method>(...)`)
+    // syntax regardless of which form the source actually used, which
+    // doesn't match anything a developer triaging the warning could
+    // actually go find.
+    const matchDescription = match.sourceKind === 'shorthand' ? `$http.${match.method}('${match.url}')` : `$http({ method: '${match.method}', url: '${match.url}' })`;
 
     if (!methodName || !VALID_IDENTIFIER.test(methodName)) {
-      skipReasons.push(`$http.${match.method}('${match.url}') at line ${match.call.getStartLineNumber()}: no safe method name could be derived from its enclosing function — not safely transformable`);
+      skipReasons.push(`${matchDescription} at line ${match.call.getStartLineNumber()}: no safe method name could be derived from its enclosing function — not safely transformable`);
       continue;
     }
     if (RESERVED_METHOD_NAMES.has(methodName)) {
