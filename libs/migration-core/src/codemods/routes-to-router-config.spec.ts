@@ -319,6 +319,67 @@ describe('transformRoutesToRouterConfig', () => {
     expect(result.reason).toContain('could not derive a valid component class name');
   });
 
+  it('skips a state() call whose name is not a plain string literal', () => {
+    const before = [
+      "angular.module('app').config(function ($stateProvider) {",
+      "  var stateName = 'dashboard';",
+      "  $stateProvider.state(stateName, { url: '/dashboard', templateUrl: 'dashboard.html' });",
+      '});',
+    ].join('\n');
+
+    const result = transformRoutesToRouterConfig(before);
+
+    assertUnmatched(result);
+    expect(result.reason).toContain('name/path is not a plain string literal');
+  });
+
+  it('skips an otherwise() call whose argument is not a plain string literal', () => {
+    const before = [
+      "angular.module('app').config(function ($routeProvider) {",
+      '  var fallback = getFallbackPath();',
+      "  $routeProvider.when('/x', { templateUrl: 'x.html' });",
+      '  $routeProvider.otherwise(fallback);',
+      '});',
+    ].join('\n');
+
+    const result = transformRoutesToRouterConfig(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    // the malformed otherwise() is skipped and reported, not guessed at —
+    // the real, well-formed when() route still transforms
+    expect(result.output).toContain("{ path: 'x', component: XComponent }");
+    expect(result.output).not.toContain('redirectTo');
+    expect(result.warnings?.some((w) => w.includes('otherwise() argument is not a plain string literal'))).toBe(true);
+  });
+
+  it('skips a state() call whose second argument is not a plain object literal', () => {
+    const before = [
+      "angular.module('app').config(function ($stateProvider) {",
+      '  var config = buildConfig();',
+      "  $stateProvider.state('dashboard', config);",
+      '});',
+    ].join('\n');
+
+    const result = transformRoutesToRouterConfig(before);
+
+    assertUnmatched(result);
+    expect(result.reason).toContain('route config is not a plain object literal');
+  });
+
+  it('skips a state() call with no plain string url property', () => {
+    const before = [
+      "angular.module('app').config(function ($stateProvider) {",
+      "  $stateProvider.state('dashboard', { templateUrl: 'dashboard.html' });",
+      '});',
+    ].join('\n');
+
+    const result = transformRoutesToRouterConfig(before);
+
+    assertUnmatched(result);
+    expect(result.reason).toContain('no plain string "url" property');
+  });
+
   it('does not match a file with no .config() calls at all', () => {
     const before = "angular.module('app').service('foo', function () {});";
 
