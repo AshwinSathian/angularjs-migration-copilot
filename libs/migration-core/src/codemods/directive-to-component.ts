@@ -110,8 +110,17 @@ export function getObjectLiteralProperty(obj: ObjectLiteralExpression, name: str
   return { present: true, value: Node.isPropertyAssignment(prop) ? prop.getInitializer() : undefined };
 }
 
-/** `false` is the AngularJS default for `scope`/`transclude` — only a truthy value (or presence at all, for `compile`/`link`) is a real opt-in worth flagging. */
-function isTruthyValue(value: Node | undefined): boolean {
+/**
+ * `false` is the AngularJS default for `scope`/`transclude`/`abstract` —
+ * only a truthy value (or presence at all, for `compile`/`link`) is a real
+ * opt-in worth flagging. Exported for reuse by pattern #8
+ * (`routes-to-router-config.ts`, `abstract: true`) rather than
+ * re-derived — a route-scoped file originally hand-rolled this exact
+ * check and silently diverged on the "present but no value" edge case
+ * (e.g. a nonsensical method-shorthand `abstract() {...}`), found by
+ * adversarial review.
+ */
+export function isTruthyValue(value: Node | undefined): boolean {
   return value !== undefined && value.getKind() !== SyntaxKind.FalseKeyword;
 }
 

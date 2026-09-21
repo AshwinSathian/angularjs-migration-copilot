@@ -8,6 +8,7 @@ import {
   transformControllerAsToClass,
   transformDirectiveToComponent,
   transformFilterToPipe,
+  transformRoutesToRouterConfig,
   transformScopeAssignmentToClassProperty,
   type CodemodResult,
 } from './codemods/index.js';
@@ -22,6 +23,7 @@ const CODEMODS: Record<string, (sourceText: string) => CodemodResult> = {
   'directive-to-component': transformDirectiveToComponent,
   'bindings-to-input': transformBindingsToInput,
   'filter-to-pipe': transformFilterToPipe,
+  'routes-to-router-config': transformRoutesToRouterConfig,
 };
 
 const program = new Command();
