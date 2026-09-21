@@ -7,6 +7,7 @@ import {
   transformBindingsToInput,
   transformControllerAsToClass,
   transformDirectiveToComponent,
+  transformEventBusToSubject,
   transformFilterToPipe,
   transformRoutesToRouterConfig,
   transformScopeAssignmentToClassProperty,
@@ -24,6 +25,7 @@ const CODEMODS: Record<string, (sourceText: string) => CodemodResult> = {
   'bindings-to-input': transformBindingsToInput,
   'filter-to-pipe': transformFilterToPipe,
   'routes-to-router-config': transformRoutesToRouterConfig,
+  'event-bus-to-subject': transformEventBusToSubject,
 };
 
 const program = new Command();

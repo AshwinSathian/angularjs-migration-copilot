@@ -121,10 +121,41 @@ export function nearestInsertionPointStart(node: Node): number {
  * review history treats as the worse failure by a wide margin.
  */
 export function hasExistingTopLevelBinding(sourceFile: SourceFile, name: string, ignore?: Node): boolean {
-  const functions = sourceFile.getDescendantsOfKind(SyntaxKind.FunctionDeclaration).filter((d) => d.getName() === name);
-  const classes = sourceFile.getDescendantsOfKind(SyntaxKind.ClassDeclaration).filter((d) => d.getName() === name);
-  const variables = sourceFile.getDescendantsOfKind(SyntaxKind.VariableDeclaration).filter((d) => d.getName() === name);
-  return [...functions, ...classes, ...variables].some((d) => d !== ignore);
+  const hasDeclaration =
+    sourceFile.getDescendantsOfKind(SyntaxKind.FunctionDeclaration).some((d) => d.getName() === name && d !== ignore) ||
+    sourceFile.getDescendantsOfKind(SyntaxKind.ClassDeclaration).some((d) => d.getName() === name && d !== ignore) ||
+    sourceFile.getDescendantsOfKind(SyntaxKind.VariableDeclaration).some((d) => d.getName() === name && d !== ignore);
+  if (hasDeclaration) return true;
+  return importLocalBindingNames(sourceFile).includes(name);
+}
+
+/**
+ * Every local binding name an `import` statement introduces — a default
+ * import, a namespace import (`* as X`), or a named import, aliased or
+ * not. Found missing by adversarial review against pattern #10
+ * (event-bus-to-subject.ts, ADR-046) — `hasExistingTopLevelBinding`
+ * checked function/class/variable declarations but not imports, so a
+ * source file already importing something named the same as a codemod's
+ * derived/referenced identifier (e.g. a pre-existing `import { Subject }
+ * from './my-custom-subject';`) went undetected as a collision, silently
+ * shadowing the real name the emitted code depends on — confirmed by
+ * actually running the compiled codemod against a constructed repro, same
+ * failure class ADR-045 already fixed for the IIFE-scope gap. Affects
+ * every caller of `hasExistingTopLevelBinding`, not just the one that
+ * surfaced it, so fixed here rather than pattern-locally.
+ */
+function importLocalBindingNames(sourceFile: SourceFile): string[] {
+  const names: string[] = [];
+  for (const importDecl of sourceFile.getImportDeclarations()) {
+    const defaultImport = importDecl.getDefaultImport();
+    if (defaultImport) names.push(defaultImport.getText());
+    const namespaceImport = importDecl.getNamespaceImport();
+    if (namespaceImport) names.push(namespaceImport.getText());
+    for (const named of importDecl.getNamedImports()) {
+      names.push((named.getAliasNode() ?? named.getNameNode()).getText());
+    }
+  }
+  return names;
 }
 
 /**
