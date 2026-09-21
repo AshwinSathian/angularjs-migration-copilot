@@ -62,6 +62,17 @@ import type { CodemodResult } from './types.js';
  * callback-parameter name) than `$http.jsonp(url)`'s auto-detected
  * `JSON_CALLBACK` placeholder — a real, structural API difference, not
  * something safely guessed at from one real example.
+ *
+ * Two narrow gaps flagged (not fixed), zero real-fixture evidence for
+ * either: (1) `resolveStaticString`'s reassignment guard catches every
+ * assignment-*operator* reassignment (`=`, `+=`, ...) but not a
+ * destructuring reassignment (`({ url } = cfg)`) or a `for`-loop
+ * variable's own reuse — both real ways a `var`/`let` binding can change
+ * value, neither seen in any real fixture or plausible for the one real
+ * shape (`var url = '...'` never destructured or loop-bound in
+ * `WeatherCtrl.js`). (2) `chainLinkCount` doesn't see through a
+ * `ParenthesizedExpression` — `($http.get(url)).then(...)` is invisible
+ * to it — an unusual style with no real-fixture instance.
  */
 
 const NO_BODY_METHODS = new Set(['get', 'delete', 'head']);
@@ -71,16 +82,30 @@ const KNOWN_METHODS = new Set([...NO_BODY_METHODS, ...WITH_BODY_METHODS]);
 const SERVICE_CLASS_NAME = 'HttpMigrationService';
 
 /**
+ * The generated class's injected `HttpClient` constructor-parameter-
+ * property name — the single source of truth for both the constructor
+ * text (`classText`, below) and `RESERVED_METHOD_NAMES`, so the two can't
+ * silently drift apart the way independently hardcoding `'http'` in both
+ * places would risk (found worth closing by adversarial review, even
+ * though both currently agree): if the constructor's own parameter name
+ * were ever changed without updating a hand-duplicated reserved-name
+ * check, the exact `TS2300` collision that check exists to prevent would
+ * silently reopen.
+ */
+const HTTP_PARAM_NAME = 'http';
+
+/**
  * A derived method name colliding with either of these breaks
  * compilation regardless of `VALID_IDENTIFIER`/collision checks aimed at
- * *file-level* names — `http` is the generated class's own constructor
- * parameter property (`TS2300: Duplicate identifier`), `constructor` is
- * the reserved class-member name itself (`TS2392: Multiple constructor
- * implementations`). Found by adversarial review, confirmed by
- * `assertCompiles` against both constructed repros (an enclosing
- * `function http() {...}`, an enclosing `function constructor() {...}`).
+ * *file-level* names — `HTTP_PARAM_NAME` is the generated class's own
+ * constructor parameter property (`TS2300: Duplicate identifier`),
+ * `constructor` is the reserved class-member name itself (`TS2392:
+ * Multiple constructor implementations`). Found by adversarial review,
+ * confirmed by `assertCompiles` against both constructed repros (an
+ * enclosing `function http() {...}`, an enclosing `function
+ * constructor() {...}`).
  */
-const RESERVED_METHOD_NAMES = new Set(['http', 'constructor']);
+const RESERVED_METHOD_NAMES = new Set([HTTP_PARAM_NAME, 'constructor']);
 
 /**
  * Resolves `node` to a static string value — a plain string literal, or an
@@ -148,9 +173,26 @@ function resolveStaticString(node: Node | undefined): string | undefined {
   return isReassigned ? undefined : initializer.getLiteralText();
 }
 
-/** Escapes `\` and `'` so a raw string can be embedded inside a single-quoted TS string literal without breaking out of it — found missing by self-review, confirmed by direct execution: an unescaped URL containing a single quote (e.g. `/api/o'brien`) produced a real syntax error in the emitted output. */
+/**
+ * Escapes `\`, `'`, and every line-terminator character (`\n`, `\r`,
+ * U+2028, U+2029) so a raw string can be embedded inside a single-quoted
+ * TS string literal without breaking out of it. The line-terminator case
+ * was found missing by a later adversarial review round than the quote
+ * case — confirmed by direct execution: `getLiteralText()` hands back a
+ * real newline character for a source URL literal that used a `\n`
+ * escape sequence, and embedding that raw character produced an
+ * unterminated string literal (a real `TS1002`) in the emitted output,
+ * the same class of bug the quote-escaping fix exists to prevent, just
+ * for a different character class.
+ */
 function escapeSingleQuoted(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
 }
 
 /**
@@ -225,11 +267,35 @@ function chainLinkCount(call: CallExpression): number {
   }
 }
 
-/** The nearest enclosing function/arrow — the http call's own attachment point for name derivation, never an outer ancestor beyond it. */
+/**
+ * The nearest enclosing function/arrow/method/accessor — the http call's
+ * own attachment point for name derivation, never an outer ancestor
+ * beyond it. Method/accessor boundaries are included alongside the plain
+ * function kinds — same set `isInsideThisRebindingBoundary`
+ * (class-wrapping.ts) already treats as scope boundaries — found missing
+ * by adversarial review, confirmed by direct execution: without them, a
+ * call inside an ES6 method-shorthand property (`{ load() {...} }`) was
+ * invisible to this walk, which then attributed the call to whatever
+ * *outer* named function happened to contain the object literal instead
+ * — a plausible-looking but semantically wrong generated method name.
+ * `deriveMethodName` has no naming rule for a method/accessor node (its
+ * parent is never a plain-assignment or variable-declaration the way a
+ * function expression's can be), so stopping here correctly falls
+ * through to an honest "no safe method name" skip instead.
+ */
 function findEnclosingFunction(node: Node): Node | undefined {
   let current = node.getParent();
   while (current) {
-    if (Node.isFunctionDeclaration(current) || Node.isFunctionExpression(current) || Node.isArrowFunction(current)) return current;
+    if (
+      Node.isFunctionDeclaration(current) ||
+      Node.isFunctionExpression(current) ||
+      Node.isArrowFunction(current) ||
+      Node.isMethodDeclaration(current) ||
+      Node.isGetAccessorDeclaration(current) ||
+      Node.isSetAccessorDeclaration(current)
+    ) {
+      return current;
+    }
     current = current.getParent();
   }
   return undefined;
@@ -296,12 +362,23 @@ export function transformHttpThenToHttpClient(sourceText: string): CodemodResult
       }
 
       const method = resolveStaticString(getObjectLiteralProperty(config, 'method').value)?.toLowerCase();
+      // AngularJS's config-object form supports `method: 'JSONP'` as the
+      // documented equivalent of `$http.jsonp(url)` — special-cased here
+      // for message parity with the shorthand form's own `.jsonp(...)`
+      // handling, found missing by adversarial review: without it, a
+      // config-object JSONP call was skipped with the generic "not a
+      // known HTTP verb" reason instead of the accurate one explaining
+      // *why* (a different Angular API/module).
+      if (method === 'jsonp') {
+        skipReasons.push(`$http({...}) at line ${node.getStartLineNumber()}: Angular's HttpClient.jsonp() needs HttpClientJsonpModule and a different call signature — not attempted`);
+        return;
+      }
       if (!method || !KNOWN_METHODS.has(method)) {
         skipReasons.push(`$http({...}) at line ${node.getStartLineNumber()}: method is not a plain string literal (or a simple, unambiguous string-valued variable) naming a known HTTP verb — not safely transformable`);
         return;
       }
       const url = resolveStaticString(getObjectLiteralProperty(config, 'url').value);
-      if (!url) {
+      if (url === undefined) {
         skipReasons.push(`$http({...}) at line ${node.getStartLineNumber()}: url is not a plain string literal (or a simple, unambiguous string-valued variable) — not safely transformable`);
         return;
       }
@@ -321,7 +398,18 @@ export function transformHttpThenToHttpClient(sourceText: string): CodemodResult
     // Shorthand form: `$http.get(url, ...)`, `.post(url, data, ...)`, etc.
     if (Node.isPropertyAccessExpression(callee) && Node.isIdentifier(callee.getExpression()) && callee.getExpression().getText() === '$http') {
       const verb = callee.getName();
-      if (verb !== 'jsonp' && !KNOWN_METHODS.has(verb)) return;
+      if (verb !== 'jsonp' && !KNOWN_METHODS.has(verb)) {
+        // Only worth a skip reason if this is genuinely a chained call —
+        // found by adversarial review: silently returning here regardless
+        // left a real, chained `$http.<unknownVerb>(...).then(...)` call
+        // (e.g. a typo'd verb) falling back to the generic "no $http call
+        // found" reason, which is factually wrong when one genuinely was
+        // found and rejected, not absent.
+        if (chainLinkCount(node) > 0) {
+          skipReasons.push(`$http.${verb}(...) at line ${node.getStartLineNumber()}: "${verb}" is not a known HTTP verb — not safely transformable`);
+        }
+        return;
+      }
 
       const links = chainLinkCount(node);
       if (links === 0) return;
@@ -337,7 +425,7 @@ export function transformHttpThenToHttpClient(sourceText: string): CodemodResult
 
       const args = node.getArguments();
       const url = resolveStaticString(args[0]);
-      if (!url) {
+      if (url === undefined) {
         skipReasons.push(`$http.${verb}(...) at line ${node.getStartLineNumber()}: url is not a plain string literal (or a simple, unambiguous string-valued variable) — not safely transformable`);
         return;
       }
@@ -390,7 +478,7 @@ export function transformHttpThenToHttpClient(sourceText: string): CodemodResult
       continue;
     }
     if (RESERVED_METHOD_NAMES.has(methodName)) {
-      skipReasons.push(`${methodName}: collides with the generated class's own "http" constructor parameter or its "constructor" member — not safely transformable`);
+      skipReasons.push(`${methodName}: collides with the generated class's own "${HTTP_PARAM_NAME}" constructor parameter or its "constructor" member — not safely transformable`);
       continue;
     }
     if (usedMethodNames.has(methodName)) {
@@ -416,7 +504,7 @@ export function transformHttpThenToHttpClient(sourceText: string): CodemodResult
       [
         `  // Signature-only migration: the original .then()/.catch() callback logic is not migrated — see ADR-047.`,
         `  ${methodName}(${params}): Observable<unknown> {`,
-        `    return this.http.${match.method}(${args});`,
+        `    return this.${HTTP_PARAM_NAME}.${match.method}(${args});`,
         '  }',
       ].join('\n')
     );
@@ -427,7 +515,7 @@ export function transformHttpThenToHttpClient(sourceText: string): CodemodResult
   }
 
   const insertPos = moduleTopLevelInsertPos(sourceFile);
-  const classText = `@Injectable({ providedIn: 'root' })\nclass ${SERVICE_CLASS_NAME} {\n  constructor(private http: HttpClient) {}\n\n${methodBlocks.join('\n\n')}\n}`;
+  const classText = `@Injectable({ providedIn: 'root' })\nclass ${SERVICE_CLASS_NAME} {\n  constructor(private ${HTTP_PARAM_NAME}: HttpClient) {}\n\n${methodBlocks.join('\n\n')}\n}`;
   const output = applyEdits(sourceFile.getFullText(), [{ pos: insertPos, end: insertPos, replacement: `${classText}\n\n` }]);
 
   return skipReasons.length > 0 ? { matched: true, output, warnings: skipReasons } : { matched: true, output };

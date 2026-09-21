@@ -424,4 +424,88 @@ describe('transformHttpThenToHttpClient', () => {
     expect(result.reason).toContain("$http({ method: 'get', url: '/api/posts' })");
     expect(result.reason).not.toContain('$http.get(');
   });
+
+  it('escapes a newline in the URL so the emitted single-quoted string literal is not broken open', () => {
+    const before = [
+      "angular.module('app').controller('A', function ($http) {",
+      '  function loadUsers() {',
+      '    $http.get("/api/foo\\nbar").then(function () {});',
+      '  }',
+      '});',
+    ].join('\n');
+
+    const result = transformHttpThenToHttpClient(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).toContain("return this.http.get('/api/foo\\nbar');");
+  });
+
+  it('matches an empty-string URL literal instead of treating it as unresolved', () => {
+    const before = [
+      "angular.module('app').controller('A', function ($http) {",
+      '  function loadUsers() {',
+      "    $http.get('').then(function () {});",
+      '  }',
+      '});',
+    ].join('\n');
+
+    const result = transformHttpThenToHttpClient(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).toContain("return this.http.get('');");
+  });
+
+  it('does not attribute a call inside an ES6 method-shorthand property to an unrelated outer function', () => {
+    // Found by adversarial review: findEnclosingFunction previously
+    // walked straight past a MethodDeclaration boundary (no rule in this
+    // pattern's own detection logic for that node kind), so it picked
+    // the next-outer *named function declaration* instead — a
+    // plausible-looking but semantically wrong generated method name.
+    const before = [
+      "angular.module('app').controller('A', function ($http) {",
+      '  function updateGeoData() {',
+      '    var api = { load() { $http.get("/api/y").then(function () {}); } };',
+      '    api.load();',
+      '  }',
+      '});',
+    ].join('\n');
+
+    const result = transformHttpThenToHttpClient(before);
+
+    assertUnmatched(result);
+    expect(result.reason).toContain('no safe method name');
+  });
+
+  it('surfaces a skip reason for an unrecognized shorthand verb that is genuinely chained with .then()', () => {
+    const before = [
+      "angular.module('app').controller('A', function ($http) {",
+      '  function loadUsers() {',
+      "    $http.remove('/api/x').then(function () {});",
+      '  }',
+      '});',
+    ].join('\n');
+
+    const result = transformHttpThenToHttpClient(before);
+
+    assertUnmatched(result);
+    expect(result.reason).toContain('remove');
+    expect(result.reason).toContain('not a known HTTP verb');
+  });
+
+  it('surfaces the same jsonp skip reason for the config-object method: "JSONP" form as the shorthand .jsonp() form', () => {
+    const before = [
+      "angular.module('app').controller('A', function ($http) {",
+      '  function loadUsers() {',
+      "    $http({ method: 'JSONP', url: '/api/x' }).then(function () {});",
+      '  }',
+      '});',
+    ].join('\n');
+
+    const result = transformHttpThenToHttpClient(before);
+
+    assertUnmatched(result);
+    expect(result.reason).toContain('HttpClientJsonpModule');
+  });
 });
