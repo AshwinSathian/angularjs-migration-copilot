@@ -40,7 +40,7 @@ describe('transformHttpThenToHttpClient', () => {
     expect(result.output).toContain("@Injectable({ providedIn: 'root' })");
     expect(result.output).toContain('class HttpMigrationService {');
     expect(result.output).toContain('constructor(private http: HttpClient) {}');
-    expect(result.output).toContain('updateWeather(params?: Record<string, unknown>): Observable<unknown> {');
+    expect(result.output).toContain('updateWeather(params?: Record<string, string | number | boolean>): Observable<unknown> {');
     expect(result.output).toContain("return this.http.get('http://api.openweathermap.org/data/2.5/forecast', { params });");
     // insert-only — the original call site and callback bodies are untouched
     expect(result.output).toContain('function success(response) {');
@@ -100,7 +100,7 @@ describe('transformHttpThenToHttpClient', () => {
 
     assertMatched(result);
     assertCompiles(result.output);
-    expect(result.output).toContain('saveUser(body: unknown, params?: Record<string, unknown>): Observable<unknown> {');
+    expect(result.output).toContain('saveUser(body: unknown, params?: Record<string, string | number | boolean>): Observable<unknown> {');
     expect(result.output).toContain("return this.http.post('/api/users', body, { params });");
   });
 
@@ -300,5 +300,91 @@ describe('transformHttpThenToHttpClient', () => {
 
     assertUnmatched(result);
     expect(result.reason).toContain('method is not a plain string literal');
+  });
+
+  it('does not misread a POST body object literal as a params config when no third config argument is present', () => {
+    // Found by adversarial review: `hasParamsConfig` originally checked
+    // only the *last* argument's shape, so a 2-arg POST (url, body) whose
+    // body object happened to contain a `params` key was misread as a
+    // trailing config object, silently splitting real POST body data into
+    // a separate caller-supplied `params` argument.
+    const before = [
+      "angular.module('app').controller('A', function ($http) {",
+      '  function saveUser() {',
+      "    $http.post('/api/users', { params: 'x' }).then(function () {});",
+      '  }',
+      '  saveUser();',
+      '});',
+    ].join('\n');
+
+    const result = transformHttpThenToHttpClient(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).toContain('saveUser(body: unknown): Observable<unknown> {');
+    expect(result.output).toContain("return this.http.post('/api/users', body);");
+  });
+
+  it('does not require a body parameter for a real no-payload trigger POST', () => {
+    const before = [
+      "angular.module('app').controller('A', function ($http) {",
+      '  function triggerJob() {',
+      "    $http.post('/api/trigger').then(function () {});",
+      '  }',
+      '  triggerJob();',
+      '});',
+    ].join('\n');
+
+    const result = transformHttpThenToHttpClient(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).toContain('triggerJob(): Observable<unknown> {');
+    expect(result.output).toContain("return this.http.post('/api/trigger', null);");
+  });
+
+  it('skips a method/url variable mutated via compound assignment (+=), not just plain =', () => {
+    const before = [
+      "angular.module('app').controller('A', function ($http) {",
+      "  var url = '/api/users';",
+      "  url += '/extra';",
+      '  function loadUsers() {',
+      '    $http.get(url).then(function () {});',
+      '  }',
+      '});',
+    ].join('\n');
+
+    const result = transformHttpThenToHttpClient(before);
+
+    assertUnmatched(result);
+  });
+
+  it('skips a derived method name that collides with the generated class\'s own "http" constructor parameter', () => {
+    const before = [
+      "angular.module('app').controller('A', function ($http) {",
+      "  function http() { $http.get('/api/users').then(function () {}); }",
+      '  http();',
+      '});',
+    ].join('\n');
+
+    const result = transformHttpThenToHttpClient(before);
+
+    assertUnmatched(result);
+    expect(result.reason).toContain('http');
+    expect(result.reason).toContain('constructor parameter');
+  });
+
+  it('skips a derived method name that collides with the reserved "constructor" member name', () => {
+    const before = [
+      "angular.module('app').controller('A', function ($http) {",
+      "  function constructor() { $http.get('/api/users').then(function () {}); }",
+      '  constructor();',
+      '});',
+    ].join('\n');
+
+    const result = transformHttpThenToHttpClient(before);
+
+    assertUnmatched(result);
+    expect(result.reason).toContain('constructor');
   });
 });

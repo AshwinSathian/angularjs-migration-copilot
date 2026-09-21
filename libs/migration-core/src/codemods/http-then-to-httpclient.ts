@@ -1,4 +1,4 @@
-import { Node, Project, type CallExpression, type SourceFile } from 'ts-morph';
+import { Node, Project, SyntaxKind, type CallExpression, type SourceFile } from 'ts-morph';
 import { applyEdits, hasExistingTopLevelBinding, isPlainAssignment, VALID_IDENTIFIER } from './class-wrapping.js';
 import { getObjectLiteralProperty } from './directive-to-component.js';
 import type { CodemodResult } from './types.js';
@@ -71,6 +71,18 @@ const KNOWN_METHODS = new Set([...NO_BODY_METHODS, ...WITH_BODY_METHODS]);
 const SERVICE_CLASS_NAME = 'HttpMigrationService';
 
 /**
+ * A derived method name colliding with either of these breaks
+ * compilation regardless of `VALID_IDENTIFIER`/collision checks aimed at
+ * *file-level* names — `http` is the generated class's own constructor
+ * parameter property (`TS2300: Duplicate identifier`), `constructor` is
+ * the reserved class-member name itself (`TS2392: Multiple constructor
+ * implementations`). Found by adversarial review, confirmed by
+ * `assertCompiles` against both constructed repros (an enclosing
+ * `function http() {...}`, an enclosing `function constructor() {...}`).
+ */
+const RESERVED_METHOD_NAMES = new Set(['http', 'constructor']);
+
+/**
  * Resolves `node` to a static string value — a plain string literal, or an
  * identifier resolving (via real symbol binding, exactly one declaration,
  * same rigor `resolvesUniquelyTo` applies elsewhere) to a `var`/`let`/
@@ -88,7 +100,34 @@ const SERVICE_CLASS_NAME = 'HttpMigrationService';
  * method is `POST`). Not reachable by any real fixture (neither real
  * `method`/`url` variable is ever reassigned), but the same "skip when
  * ambiguous" conservatism as everywhere else in this pattern family.
+ *
+ * The reassignment check covers *every* assignment-family operator
+ * (`=`, `+=`, `-=`, ...), not just plain `=` — found too narrow by
+ * adversarial review, confirmed by direct execution: `var url = '/api/
+ * users'; url += '/extra';` still resolved to the stale `'/api/users'`
+ * initializer under a plain-`=`-only check, the exact same silently-wrong
+ * failure class the reassignment guard was added to close in the first
+ * place, just reached through a different operator.
  */
+const ASSIGNMENT_OPERATOR_KINDS = new Set([
+  SyntaxKind.EqualsToken,
+  SyntaxKind.PlusEqualsToken,
+  SyntaxKind.MinusEqualsToken,
+  SyntaxKind.AsteriskEqualsToken,
+  SyntaxKind.SlashEqualsToken,
+  SyntaxKind.PercentEqualsToken,
+  SyntaxKind.AsteriskAsteriskEqualsToken,
+  SyntaxKind.LessThanLessThanEqualsToken,
+  SyntaxKind.GreaterThanGreaterThanEqualsToken,
+  SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken,
+  SyntaxKind.AmpersandEqualsToken,
+  SyntaxKind.BarEqualsToken,
+  SyntaxKind.CaretEqualsToken,
+  SyntaxKind.BarBarEqualsToken,
+  SyntaxKind.AmpersandAmpersandEqualsToken,
+  SyntaxKind.QuestionQuestionEqualsToken,
+]);
+
 function resolveStaticString(node: Node | undefined): string | undefined {
   if (!node) return undefined;
   if (Node.isStringLiteral(node)) return node.getLiteralText();
@@ -104,7 +143,7 @@ function resolveStaticString(node: Node | undefined): string | undefined {
   const nameNode = decl.getNameNode();
   const isReassigned = Node.isIdentifier(nameNode) && nameNode.findReferencesAsNodes().some((ref) => {
     const parent = ref.getParent();
-    return Node.isBinaryExpression(parent) && isPlainAssignment(parent) && parent.getLeft() === ref;
+    return Node.isBinaryExpression(parent) && ASSIGNMENT_OPERATOR_KINDS.has(parent.getOperatorToken().getKind()) && parent.getLeft() === ref;
   });
   return isReassigned ? undefined : initializer.getLiteralText();
 }
@@ -114,8 +153,22 @@ function escapeSingleQuoted(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
-/** True if the call's last argument is an object literal with a truthy-or-present `params` property — checked generically across every verb's differing argument position (`(url, config)` vs `(url, data, config)`) rather than per-verb, since "params lives in the last object-literal argument, if any" holds regardless of verb. */
-function hasParamsConfig(args: readonly Node[]): boolean {
+/**
+ * True if `args`' last argument is a genuine trailing *config* object
+ * literal (not the body/data argument a body-bearing verb's shorthand
+ * takes positionally) with a truthy-or-present `params` property.
+ * `minArgsForConfig` is the argument count a config object can only
+ * appear at *beyond* — 2 for a no-body verb (`get(url, config)`), 3 for a
+ * body-bearing one (`post(url, data, config)`) — found missing by
+ * adversarial review, confirmed by direct execution: without this, a
+ * body-bearing verb's 2-argument call (`post(url, data)`, no config at
+ * all) that happened to pass an object literal containing a `params` key
+ * as its *body* was misread as a config object, silently splitting real
+ * POST body data into a separate, caller-supplied `params` argument.
+ */
+function hasParamsConfig(verb: string, args: readonly Node[]): boolean {
+  const minArgsForConfig = WITH_BODY_METHODS.has(verb) ? 3 : 2;
+  if (args.length < minArgsForConfig) return false;
   const last = args[args.length - 1];
   return !!last && Node.isObjectLiteralExpression(last) && getObjectLiteralProperty(last, 'params').present;
 }
@@ -125,6 +178,16 @@ interface HttpMatch {
   readonly method: string;
   readonly url: string;
   readonly hasParams: boolean;
+  /**
+   * Whether the original call actually passed body/`data`, not just
+   * whether the verb is one of POST/PUT/PATCH — found by adversarial
+   * review: basing the generated method's `body: unknown` parameter on
+   * the verb alone forced callers to supply a body argument even for a
+   * real no-payload trigger POST (`$http.post('/api/trigger')`), the same
+   * "only add what was actually present" treatment `hasParams` already
+   * gets.
+   */
+  readonly hasBody: boolean;
   readonly sortKey: number;
 }
 
@@ -236,6 +299,7 @@ export function transformHttpThenToHttpClient(sourceText: string): CodemodResult
         method,
         url,
         hasParams: getObjectLiteralProperty(config, 'params').present,
+        hasBody: getObjectLiteralProperty(config, 'data').present,
         sortKey: node.getStart(),
       });
       return;
@@ -269,7 +333,8 @@ export function transformHttpThenToHttpClient(sourceText: string): CodemodResult
         call: node,
         method: verb,
         url,
-        hasParams: hasParamsConfig(args),
+        hasParams: hasParamsConfig(verb, args),
+        hasBody: WITH_BODY_METHODS.has(verb) && args.length >= 2,
         sortKey: node.getStart(),
       });
     }
@@ -303,15 +368,28 @@ export function transformHttpThenToHttpClient(sourceText: string): CodemodResult
       skipReasons.push(`$http.${match.method}('${match.url}') at line ${match.call.getStartLineNumber()}: no safe method name could be derived from its enclosing function — not safely transformable`);
       continue;
     }
+    if (RESERVED_METHOD_NAMES.has(methodName)) {
+      skipReasons.push(`${methodName}: collides with the generated class's own "http" constructor parameter or its "constructor" member — not safely transformable`);
+      continue;
+    }
     if (usedMethodNames.has(methodName)) {
       skipReasons.push(`${methodName}: derives the same service method name as another $http call in this file — ambiguous, not safely transformable`);
       continue;
     }
     usedMethodNames.add(methodName);
 
-    const hasBody = WITH_BODY_METHODS.has(match.method);
-    const params = [hasBody ? 'body: unknown' : undefined, match.hasParams ? 'params?: Record<string, unknown>' : undefined].filter(Boolean).join(', ');
-    const args = [`'${escapeSingleQuoted(match.url)}'`, hasBody ? 'body' : undefined, match.hasParams ? '{ params }' : undefined].filter(Boolean).join(', ');
+    // HttpClient's real post/put/patch signature takes `body` as a
+    // required positional argument (its type permits `null`, but the
+    // parameter itself can't be omitted) — a body-bearing verb with no
+    // real body data still needs *something* passed positionally before
+    // any trailing `options`, or the emitted call is missing a required
+    // argument. `null` is passed literally (no method parameter exposed
+    // for it) rather than forcing every params-only trigger POST to also
+    // declare a meaningless `body: unknown` parameter.
+    const isBodyVerb = WITH_BODY_METHODS.has(match.method);
+    const bodyArg = isBodyVerb ? (match.hasBody ? 'body' : 'null') : undefined;
+    const params = [match.hasBody ? 'body: unknown' : undefined, match.hasParams ? 'params?: Record<string, string | number | boolean>' : undefined].filter(Boolean).join(', ');
+    const args = [`'${escapeSingleQuoted(match.url)}'`, bodyArg, match.hasParams ? '{ params }' : undefined].filter(Boolean).join(', ');
 
     methodBlocks.push(
       [
