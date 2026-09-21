@@ -1,5 +1,5 @@
 import { Node, Project, type PropertyAccessExpression } from 'ts-morph';
-import { extractDependencyNames, forEachPropertyAccessCall } from '../inventory/ast-helpers.js';
+import { arrayDiArityMismatchReason, extractDependencyNames, forEachPropertyAccessCall } from '../inventory/ast-helpers.js';
 import {
   applyEdits,
   buildClassText,
@@ -180,10 +180,9 @@ export function transformArrayStyleDiToConstructor(sourceText: string): CodemodR
     if (!definitionArg || !Node.isArrayLiteralExpression(definitionArg)) continue;
     const actualDependencies = extractDependencyNames(definitionArg);
     const paramCount = resolvedFn.getParameters().length;
-    if (actualDependencies.length !== paramCount) {
-      skipReasons.push(
-        `${className}: dependency array has ${actualDependencies.length} names but the function declares ${paramCount} parameter(s) — ambiguous binding, not safely transformable`
-      );
+    const arityReason = arrayDiArityMismatchReason(actualDependencies, paramCount);
+    if (arityReason) {
+      skipReasons.push(`${className}: ${arityReason}`);
       continue;
     }
 

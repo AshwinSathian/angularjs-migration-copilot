@@ -33,6 +33,44 @@ export function extractDependencyNames(definitionArg: Node | undefined): string[
 }
 
 /**
+ * The chain root of a (possibly chained) call's receiver — `$stateProvider`
+ * for both `$stateProvider.state(a)` and the second link of
+ * `$stateProvider.state(a).state(b)`, whose own receiver is the first
+ * call, not a plain identifier. General call-chain-walking plumbing (no
+ * dependency on what the chain is *for*), alongside `forEachPropertyAccessCall`/
+ * `methodCallLine` — pattern #8 (`routes-to-router-config.ts`) is the
+ * first caller (needed to confirm a `.state(...)`/`.when(...)` call's
+ * receiver actually resolves to the injected route provider, not just
+ * share its method name with an unrelated provider), but the walk itself
+ * has nothing routing-specific about it.
+ */
+export function resolveChainRoot(node: Node): Node | undefined {
+  if (Node.isIdentifier(node)) return node;
+  if (Node.isCallExpression(node)) {
+    const callee = node.getExpression();
+    if (Node.isPropertyAccessExpression(callee)) return resolveChainRoot(callee.getExpression());
+  }
+  return undefined;
+}
+
+/**
+ * `undefined` when `depNames.length` (an array-style DI dependency list)
+ * matches `paramCount` (the wrapped function's own parameter count) —
+ * otherwise the ambiguous-binding skip-reason fragment, shared verbatim
+ * between `array-di-to-constructor.ts` (pattern #3) and
+ * `routes-to-router-config.ts` (pattern #8), which independently arrived
+ * at the identical check and message for the identical reason: a
+ * mismatched array-style DI list has no safe positional mapping to the
+ * function's parameters, full stop, regardless of which registration kind
+ * is being transformed.
+ */
+export function arrayDiArityMismatchReason(depNames: readonly string[], paramCount: number): string | undefined {
+  return depNames.length === paramCount
+    ? undefined
+    : `dependency array has ${depNames.length} names but the function declares ${paramCount} parameter(s) — ambiguous binding, not safely transformable`;
+}
+
+/**
  * Walks every source file in `project` looking for `x.method(...)` call
  * expressions, invoking `callback` for each one. This is the traversal
  * skeleton every scan-*.ts file needs (module declarations, registrations,

@@ -1,7 +1,8 @@
-import { Node, Project, SyntaxKind, type CallExpression, type ObjectLiteralExpression, type ParameterDeclaration, type PropertyAccessExpression } from 'ts-morph';
-import { extractDependencyNames, forEachPropertyAccessCall } from '../inventory/ast-helpers.js';
+import { Node, Project, SyntaxKind, type CallExpression, type FunctionDeclaration, type ObjectLiteralExpression, type ParameterDeclaration, type PropertyAccessExpression, type SourceFile } from 'ts-morph';
+import { arrayDiArityMismatchReason, extractDependencyNames, forEachPropertyAccessCall, resolveChainRoot } from '../inventory/ast-helpers.js';
 import {
   applyEdits,
+  findInjectAssignmentStatements,
   groupInsertionsByPosition,
   hasExistingTopLevelBinding,
   isValidClassName,
@@ -10,7 +11,7 @@ import {
   resolvesUniquelyTo,
   type WrappableFunction,
 } from './class-wrapping.js';
-import { getObjectLiteralProperty } from './directive-to-component.js';
+import { getObjectLiteralProperty, isTruthyValue } from './directive-to-component.js';
 import type { CodemodResult } from './types.js';
 
 /**
@@ -122,6 +123,26 @@ import type { CodemodResult } from './types.js';
  * claimed once every entry in it is confirmed to survive, so a
  * registration that ultimately fails never blocks a later, unrelated one
  * from reusing the same names).
+ *
+ * **Two real bugs found by adversarial review before merge, both fixed**:
+ * (1) `.otherwise(path)`'s emitted `{path: '**', redirectTo}` entry was
+ * originally spliced in at its *source* position among the `.when(...)`
+ * entries — harmless for `angular-phonecat`'s real file (`.otherwise()` is
+ * textually last there too), but wrong in general: AngularJS evaluates
+ * `.otherwise()` only after every other route fails to match regardless of
+ * where it's written, while Angular's `Routes` array matches top-to-bottom,
+ * so a wildcard anywhere but last silently shadows every route after it.
+ * Fixed by always appending the (last, in the "repeated calls overwrite"
+ * AngularJS-runtime sense) `.otherwise()` entry at the *end* of the emitted
+ * array, and warning (not silently dropping) when more than one
+ * `.otherwise()` call is found. (2) The provider-parameter lookup for a
+ * bare/named-reference `.config(fn)` only matched by parameter *name*
+ * (`$routeProvider`/`$stateProvider`), missing the equally-real,
+ * minifier-safe `fn.$inject = [...]` annotation idiom entirely — not even
+ * a skip reason, the registration was silently never recognized as routing
+ * at all. Fixed with `findProviderParamViaInject`, reusing
+ * `findInjectAssignmentStatements` (`class-wrapping.ts`) rather than
+ * re-deriving it.
  */
 
 interface RoutingConfigMatch {
@@ -130,12 +151,55 @@ interface RoutingConfigMatch {
   readonly kind: 'ngRoute' | 'ui-router';
 }
 
+/** The two route-provider injection tokens this pattern resolves, and which router API each implies — a single source of truth reused everywhere a "is this name/index one of the two provider tokens" check is needed, rather than re-deriving the `'$routeProvider' | '$stateProvider'` comparison and its ternary at each call site. */
+const PROVIDER_KIND: Record<string, 'ngRoute' | 'ui-router'> = {
+  $routeProvider: 'ngRoute',
+  $stateProvider: 'ui-router',
+};
+
 /** `$routeProvider`/`$stateProvider`, identified by parameter *name* — the real AngularJS implicit-annotation binding for an unminified, unannotated function (see the module docstring). */
 function findProviderParam(fn: WrappableFunction): { param: ParameterDeclaration; kind: 'ngRoute' | 'ui-router' } | undefined {
   const params = fn.getParameters();
-  const index = params.findIndex((p) => p.getName() === '$routeProvider' || p.getName() === '$stateProvider');
+  const index = params.findIndex((p) => p.getName() in PROVIDER_KIND);
   if (index === -1) return undefined;
-  return { param: params[index], kind: params[index].getName() === '$routeProvider' ? 'ngRoute' : 'ui-router' };
+  return { param: params[index], kind: PROVIDER_KIND[params[index].getName()] };
+}
+
+/**
+ * Fallback for a named-reference `.config(routeConfig)` whose parameter
+ * isn't literally named `$routeProvider`/`$stateProvider` but carries an
+ * explicit `routeConfig.$inject = [...]` annotation instead — the same
+ * minifier-safe idiom `class-wrapping.ts`'s `findInjectAssignmentStatements`
+ * already resolves for `.controller`/`.directive`/`.filter`, extended here
+ * because this pattern (uniquely among this codebase's codemods) has to
+ * identify *which* parameter is the provider by its injected identity, not
+ * just take every parameter as-is. Found by adversarial review — a real,
+ * common AngularJS idiom this pattern's parameter-name-only check silently
+ * missed entirely (not even a skip reason, just never recognized as a
+ * routing candidate at all). Requires the `$inject` array's length to match
+ * the function's own parameter count, the same arity guarantee array-style
+ * DI already requires — a mismatched annotation is unusable for mapping a
+ * specific index to a specific parameter and is skipped (not guessed at),
+ * falling through to try any other `$inject` statement found for the same
+ * function.
+ */
+function findProviderParamViaInject(namedFn: FunctionDeclaration, sourceFile: SourceFile): { param: ParameterDeclaration; kind: 'ngRoute' | 'ui-router' } | undefined {
+  for (const { statement } of findInjectAssignmentStatements(sourceFile, namedFn)) {
+    if (!Node.isExpressionStatement(statement)) continue;
+    const assignment = statement.getExpression();
+    if (!Node.isBinaryExpression(assignment)) continue;
+    const right = assignment.getRight();
+    if (!Node.isArrayLiteralExpression(right)) continue;
+
+    const depNames = extractDependencyNames(right);
+    if (depNames.length !== namedFn.getParameters().length) continue;
+
+    const providerIndex = depNames.findIndex((n) => n in PROVIDER_KIND);
+    if (providerIndex === -1) continue;
+
+    return { param: namedFn.getParameters()[providerIndex], kind: PROVIDER_KIND[depNames[providerIndex]] };
+  }
+  return undefined;
 }
 
 /**
@@ -151,7 +215,7 @@ function findProviderParam(fn: WrappableFunction): { param: ParameterDeclaration
  * own parameter count, the same "not safely transformable" ambiguity
  * `array-di-to-constructor.ts` already treats this way.
  */
-function resolveRoutingConfig(definitionArg: Node | undefined): RoutingConfigMatch | { readonly ambiguous: string } | undefined {
+function resolveRoutingConfig(definitionArg: Node | undefined, sourceFile: SourceFile): RoutingConfigMatch | { readonly ambiguous: string } | undefined {
   if (!definitionArg) return undefined;
 
   if (Node.isFunctionExpression(definitionArg) || Node.isArrowFunction(definitionArg)) {
@@ -162,7 +226,7 @@ function resolveRoutingConfig(definitionArg: Node | undefined): RoutingConfigMat
   if (Node.isIdentifier(definitionArg)) {
     const namedFn = resolveNamedFunctionDeclaration(definitionArg);
     if (!namedFn) return undefined;
-    const found = findProviderParam(namedFn);
+    const found = findProviderParam(namedFn) ?? findProviderParamViaInject(namedFn, sourceFile);
     return found ? { fn: namedFn, providerParam: found.param, kind: found.kind } : undefined;
   }
 
@@ -172,17 +236,14 @@ function resolveRoutingConfig(definitionArg: Node | undefined): RoutingConfigMat
     if (!last || !(Node.isFunctionExpression(last) || Node.isArrowFunction(last))) return undefined;
 
     const depNames = extractDependencyNames(definitionArg);
-    const providerIndex = depNames.findIndex((n) => n === '$routeProvider' || n === '$stateProvider');
+    const providerIndex = depNames.findIndex((n) => n in PROVIDER_KIND);
     if (providerIndex === -1) return undefined;
 
     const paramCount = last.getParameters().length;
-    if (depNames.length !== paramCount) {
-      return {
-        ambiguous: `dependency array has ${depNames.length} names but the function declares ${paramCount} parameter(s) — ambiguous binding, not safely transformable`,
-      };
-    }
+    const arityReason = arrayDiArityMismatchReason(depNames, paramCount);
+    if (arityReason) return { ambiguous: arityReason };
 
-    return { fn: last, providerParam: last.getParameters()[providerIndex], kind: depNames[providerIndex] === '$routeProvider' ? 'ngRoute' : 'ui-router' };
+    return { fn: last, providerParam: last.getParameters()[providerIndex], kind: PROVIDER_KIND[depNames[providerIndex]] };
   }
 
   return undefined;
@@ -198,31 +259,26 @@ function resolveModuleName(configPropertyAccess: PropertyAccessExpression): stri
   return nameArg && Node.isStringLiteral(nameArg) ? nameArg.getLiteralText() : undefined;
 }
 
-/** The chain root of a (possibly chained) call's receiver — `$stateProvider` for both `$stateProvider.state(a)` and the second link of `$stateProvider.state(a).state(b)`, whose own receiver is the first call, not a plain identifier. */
-function resolveChainRoot(node: Node): Node | undefined {
-  if (Node.isIdentifier(node)) return node;
-  if (Node.isCallExpression(node)) {
-    const callee = node.getExpression();
-    if (Node.isPropertyAccessExpression(callee)) return resolveChainRoot(callee.getExpression());
-  }
-  return undefined;
+interface RouteCallMatch {
+  readonly call: CallExpression;
+  readonly callee: PropertyAccessExpression;
 }
 
-/** Every `.when`/`.state`/`.otherwise` call in `fn`'s body whose chain root resolves — via real symbol binding — to `providerParam`, in true source order (a chained call's outer link is visited first by ts-morph's descendant walk, the same reversal `ast-helpers.ts`'s `methodCallLine` already documents, so results are sorted by each call's own method-name-token position afterward). */
-function collectRouteCalls(fn: WrappableFunction, providerParam: ParameterDeclaration, kind: 'ngRoute' | 'ui-router'): CallExpression[] {
+/** Every `.when`/`.state`/`.otherwise` call in `fn`'s body whose chain root resolves — via real symbol binding — to `providerParam`, in true source order (a chained call's outer link is visited first by ts-morph's descendant walk, the same reversal `ast-helpers.ts`'s `methodCallLine` already documents, so results are sorted by each call's own method-name-token position afterward). Returns each call paired with its already-narrowed `callee` so callers don't have to re-derive and re-check `Node.isPropertyAccessExpression` on a shape this function has already confirmed. */
+function collectRouteCalls(fn: WrappableFunction, providerParam: ParameterDeclaration, kind: 'ngRoute' | 'ui-router'): RouteCallMatch[] {
   const targetNames = kind === 'ngRoute' ? new Set(['when', 'otherwise']) : new Set(['state']);
   const body = fn.getBody();
   if (!body) return [];
 
-  const found: { call: CallExpression; sortKey: number }[] = [];
+  const found: { match: RouteCallMatch; sortKey: number }[] = [];
   for (const call of body.getDescendantsOfKind(SyntaxKind.CallExpression)) {
     const callee = call.getExpression();
     if (!Node.isPropertyAccessExpression(callee) || !targetNames.has(callee.getName())) continue;
     const root = resolveChainRoot(callee.getExpression());
     if (!root || !resolvesUniquelyTo(root, [providerParam])) continue;
-    found.push({ call, sortKey: callee.getNameNode().getStart() });
+    found.push({ match: { call, callee }, sortKey: callee.getNameNode().getStart() });
   }
-  return found.sort((a, b) => a.sortKey - b.sortKey).map((f) => f.call);
+  return found.sort((a, b) => a.sortKey - b.sortKey).map((f) => f.match);
 }
 
 /** Strips leading `:` (a ui-router/ngRoute path param) and any non-alphanumeric separator, Pascal-casing what's left — e.g. `social-buttons` → `SocialButtons`, `:phoneId` → `PhoneId`. `undefined` for a segment with nothing alphanumeric in it at all. */
@@ -286,7 +342,7 @@ export function transformRoutesToRouterConfig(sourceText: string): CodemodResult
     const args = call.getArguments();
     if (args.length !== 1) return;
 
-    const resolved = resolveRoutingConfig(args[0]);
+    const resolved = resolveRoutingConfig(args[0], sourceFile);
     if (!resolved) return;
 
     const moduleName = resolveModuleName(expression);
@@ -312,12 +368,24 @@ export function transformRoutesToRouterConfig(sourceText: string): CodemodResult
     const { fn, providerParam, kind } = match;
     const routeCalls = collectRouteCalls(fn, providerParam, kind);
 
-    const entries: string[] = [];
+    // Computed once, up front — `routesVarName` depends only on
+    // `moduleName`, known before any route call is even walked. Checking
+    // it here (rather than after building every entry) avoids validating
+    // it twice, and the distinct messages are still preserved rather than
+    // collapsed into one.
+    const routesVarName = deriveRoutesVarName(moduleName);
+    const routesVarNameSkipReason = !isValidClassName(routesVarName)
+      ? `${routesVarName}: derived routes constant name is not a valid identifier — not safely transformable`
+      : usedNames.has(routesVarName) || hasExistingTopLevelBinding(sourceFile, routesVarName)
+        ? `${routesVarName}: derived routes constant name collides with an existing name in this file — ambiguous, not safely transformable`
+        : undefined;
+
+    const whenEntries: string[] = [];
+    let otherwiseEntry: string | undefined;
+    let sawMultipleOtherwise = false;
     const localUsedNames = new Set<string>();
 
-    for (const call of routeCalls) {
-      const callee = call.getExpression();
-      if (!Node.isPropertyAccessExpression(callee)) continue;
+    for (const { call, callee } of routeCalls) {
       const calleeName = callee.getName();
 
       if (calleeName === 'otherwise') {
@@ -326,7 +394,20 @@ export function transformRoutesToRouterConfig(sourceText: string): CodemodResult
           skipReasons.push(`${moduleName ?? 'config'}: otherwise() argument is not a plain string literal — not safely transformable`);
           continue;
         }
-        entries.push(`{ path: '**', redirectTo: '${toRouterPath(pathArg.getLiteralText())}' }`);
+        // AngularJS's $routeProvider.otherwise() has no accumulation —
+        // a repeated call simply overwrites the previous one, so (routeCalls
+        // already being in true source order) the *last* call is the one
+        // actually active at runtime; anything earlier is dead
+        // configuration, surfaced as a warning rather than silently
+        // dropped. The winning entry is also forced to the *end* of the
+        // emitted array below regardless of where `.otherwise()` was
+        // textually written — AngularJS evaluates it only after every
+        // other route fails to match, but Angular's `Routes` array has no
+        // such implicit fallback ordering: it matches top-to-bottom, so a
+        // wildcard `**` emitted anywhere but last would shadow every
+        // route after it.
+        if (otherwiseEntry !== undefined) sawMultipleOtherwise = true;
+        otherwiseEntry = `{ path: '**', redirectTo: '${toRouterPath(pathArg.getLiteralText())}' }`;
         continue;
       }
 
@@ -348,12 +429,9 @@ export function transformRoutesToRouterConfig(sourceText: string): CodemodResult
       }
       const config: ObjectLiteralExpression = configArg;
 
-      if (calleeName === 'state') {
-        const abstractProp = getObjectLiteralProperty(config, 'abstract');
-        if (abstractProp.present && abstractProp.value?.getKind() !== SyntaxKind.FalseKeyword) {
-          skipReasons.push(`${nameOrPath}: abstract state — no leaf route to render, out of scope for pattern #8`);
-          continue;
-        }
+      if (calleeName === 'state' && isTruthyValue(getObjectLiteralProperty(config, 'abstract').value)) {
+        skipReasons.push(`${nameOrPath}: abstract state — no leaf route to render, out of scope for pattern #8`);
+        continue;
       }
 
       let routerPath: string;
@@ -380,18 +458,18 @@ export function transformRoutesToRouterConfig(sourceText: string): CodemodResult
       }
       localUsedNames.add(className);
 
-      entries.push(`{ path: '${routerPath}', component: ${className} }`);
+      whenEntries.push(`{ path: '${routerPath}', component: ${className} }`);
     }
 
+    if (sawMultipleOtherwise) {
+      skipReasons.push(`${moduleName ?? 'config'}: multiple otherwise() calls found — only the last one (AngularJS's own runtime behavior) is used`);
+    }
+
+    const entries = otherwiseEntry === undefined ? whenEntries : [...whenEntries, otherwiseEntry];
     if (entries.length === 0) continue;
 
-    const routesVarName = deriveRoutesVarName(moduleName);
-    if (!isValidClassName(routesVarName)) {
-      skipReasons.push(`${routesVarName}: derived routes constant name is not a valid identifier — not safely transformable`);
-      continue;
-    }
-    if (usedNames.has(routesVarName) || localUsedNames.has(routesVarName) || hasExistingTopLevelBinding(sourceFile, routesVarName)) {
-      skipReasons.push(`${routesVarName}: derived routes constant name collides with an existing name in this file — ambiguous, not safely transformable`);
+    if (routesVarNameSkipReason) {
+      skipReasons.push(routesVarNameSkipReason);
       continue;
     }
 

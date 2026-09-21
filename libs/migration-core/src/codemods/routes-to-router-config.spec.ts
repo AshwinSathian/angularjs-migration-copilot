@@ -42,8 +42,62 @@ describe('transformRoutesToRouterConfig', () => {
     expect(result.output).toContain("{ path: 'phones', component: PhonesComponent }");
     expect(result.output).toContain("{ path: 'phones/:phoneId', component: PhonesPhoneIdComponent }");
     expect(result.output).toContain("{ path: '**', redirectTo: 'phones' }");
+    // the wildcard redirect must be the LAST array entry — Angular Router
+    // matches top-to-bottom, unlike AngularJS's always-evaluated-last otherwise()
+    expect(result.output.indexOf("redirectTo: 'phones'")).toBeGreaterThan(result.output.indexOf('PhonesPhoneIdComponent'));
     // insert-only — the original registration is left untouched
     expect(result.output).toContain("when('/phones', {");
+  });
+
+  it('forces otherwise() to the end of the emitted array even when it is textually written before a when() call', () => {
+    const before = [
+      "angular.module('app').config(function ($routeProvider) {",
+      "  $routeProvider.otherwise('/home');",
+      "  $routeProvider.when('/users', { templateUrl: 'users.html' });",
+      '});',
+    ].join('\n');
+
+    const result = transformRoutesToRouterConfig(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).toContain("{ path: 'users', component: UsersComponent }");
+    expect(result.output.indexOf("redirectTo: 'home'")).toBeGreaterThan(result.output.indexOf('UsersComponent'));
+  });
+
+  it('uses the last otherwise() call and warns about earlier, superseded ones (AngularJS overwrites, not accumulates)', () => {
+    const before = [
+      "angular.module('app').config(function ($routeProvider) {",
+      "  $routeProvider.otherwise('/first');",
+      "  $routeProvider.otherwise('/second');",
+      '});',
+    ].join('\n');
+
+    const result = transformRoutesToRouterConfig(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).toContain("redirectTo: 'second'");
+    expect(result.output).not.toContain("redirectTo: 'first'");
+    expect(result.warnings?.some((w) => w.includes('multiple otherwise() calls'))).toBe(true);
+  });
+
+  it('resolves the provider via an explicit $inject annotation when the local parameter name does not literally match (real, minifier-safe AngularJS idiom)', () => {
+    const before = [
+      "angular.module('BlurAdmin.pages.dashboard', []).config(routeConfig);",
+      '',
+      'function routeConfig(sp) {',
+      "  sp.state('dashboard', { url: '/dashboard', templateUrl: 'dashboard.html' });",
+      '}',
+      "routeConfig.$inject = ['$stateProvider'];",
+    ].join('\n');
+
+    const result = transformRoutesToRouterConfig(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+    expect(result.output).toContain('const DashboardRoutes: Routes = [');
+    expect(result.output).toContain("{ path: 'dashboard', component: DashboardComponent }");
   });
 
   it('converts a named-reference ui-router flat state (blur-admin dashboard.module.js\'s real shape)', () => {
