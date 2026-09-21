@@ -56,4 +56,17 @@ describe('assertValidTemplate', () => {
       assertValidTemplate('@if (a < b) {\n<li>ok</li>\n}\n<div class="y>bad')
     ).toThrow(/parse error|html/i);
   });
+
+  it('accepts a "<" comparison inside {{ }} interpolation in ordinary body content, outside any header', () => {
+    // Found by adversarial review, confirmed by direct execution: the
+    // first version of the header-masking fix only masked "<"/">"
+    // inside @for/@if's own paren span, so a completely ordinary,
+    // untouched {{ a < b }} interpolation sitting in the codemod's
+    // *body* output (the exact real shape ng-control-flow.ts's own
+    // input-side check already handles) still tripped a false positive
+    // here on the *output* side.
+    expect(() =>
+      assertValidTemplate('@for (item of items; track item) {\n<li>{{ a < b }}</li>\n}')
+    ).not.toThrow();
+  });
 });

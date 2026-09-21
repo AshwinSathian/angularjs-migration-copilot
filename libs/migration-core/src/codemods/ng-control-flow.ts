@@ -1,5 +1,6 @@
 import { parseFragment, type DefaultTreeAdapterMap } from 'parse5';
 import { applyEdits, type PositionEdit } from './class-wrapping.js';
+import { maskInterpolations, skipQuoted } from './html-text-utils.js';
 import type { CodemodResult } from './types.js';
 
 type Element = DefaultTreeAdapterMap['element'];
@@ -70,29 +71,21 @@ const SIMPLE_IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
  * string literal that happens to contain `::` (e.g.
  * `vm.check('foo::bar')` → `vm.check('foobar')`), silently changing the
  * expression's actual value rather than just stripping a binding-mode
- * marker.
+ * marker. Quote-walking (`skipQuoted`, html-text-utils.ts) is shared
+ * with `assert-valid-template.ts`'s own identical need — the two files
+ * independently reinvented and independently had to fix the same
+ * backslash-escape gap before this was extracted (docs/decisions.md
+ * ADR-048's own log documents it happening twice).
  */
 function stripOneTimeBinding(expr: string): string {
   let result = '';
   let i = 0;
-  let inQuote: string | undefined;
   while (i < expr.length) {
     const ch = expr[i];
-    if (inQuote) {
-      result += ch;
-      if (ch === '\\') {
-        result += expr[i + 1] ?? '';
-        i += 2;
-        continue;
-      }
-      if (ch === inQuote) inQuote = undefined;
-      i++;
-      continue;
-    }
     if (ch === '"' || ch === "'") {
-      inQuote = ch;
-      result += ch;
-      i++;
+      const end = skipQuoted(expr, i);
+      result += expr.slice(i, end);
+      i = end;
       continue;
     }
     if (expr.startsWith('::', i)) {
@@ -187,13 +180,23 @@ function combineCoincidentInserts(edits: readonly PositionEdit[]): PositionEdit[
   return [...others, ...combined];
 }
 
-/** `undefined` for a valueless attribute (`<div ng-if>`, syntactically legal HTML) — found by adversarial review: without this check, the fallback read the bare attribute name itself as if it were the expression. */
+/**
+ * `undefined` for a valueless attribute (`<div ng-if>`, syntactically
+ * legal HTML — found by adversarial review: without this check, the
+ * fallback read the bare attribute name itself as if it were the
+ * expression) or an explicitly empty/whitespace-only one (`ng-if=""`,
+ * `ng-if="   "` — found by a later adversarial round, confirmed by
+ * direct execution: without this, `planIf`/`planRepeat`/`planShow`
+ * happily produced an empty, invalid condition, e.g. `@if () {`,
+ * `matched: true`, no warning).
+ */
 function getAttrValue(rawToken: string): string | undefined {
   const eq = rawToken.indexOf('=');
   if (eq === -1) return undefined;
   const raw = rawToken.slice(eq + 1).trim();
   const quote = raw[0];
-  return quote === '"' || quote === "'" ? raw.slice(1, -1) : raw;
+  const value = quote === '"' || quote === "'" ? raw.slice(1, -1) : raw;
+  return value.trim().length === 0 ? undefined : value;
 }
 
 interface BlockPlan {
@@ -241,33 +244,46 @@ function planShow(rawValue: string): string {
   return `[hidden]="!(${stripOneTimeBinding(rawValue.trim())})"`;
 }
 
-/**
- * `invalid-first-character-of-tag-name` fires whenever ordinary text
- * content contains a bare `<` not immediately followed by a valid tag
- * name — a harmless, extremely common shape in real AngularJS/Angular
- * templates (`{{ a < b }}` interpolation, a length/comparison check),
- * not a signal of genuine structural corruption. Found by adversarial
- * review, confirmed by direct execution: surfacing every input parse
- * error as a warning (added to catch a genuinely broken sibling
- * element, e.g. an unterminated attribute) produced a spurious warning
- * on this completely ordinary, valid shape — a direct regression from
- * that same fix. Excluded here the same way `assertCompiles`
- * (assert-compiles.ts) scopes its own ignored-diagnostic list: a
- * specific, understood-to-be-safe code, not a blanket suppression —
- * genuine corruption (an unterminated attribute, a malformed tag) shows
- * up as a different error code (`eof-in-tag`, `missing-attribute-value`,
- * etc.) and is still caught.
- */
-const HARMLESS_INPUT_PARSE_ERROR_CODES = new Set(['invalid-first-character-of-tag-name']);
-
 export function transformNgDirectivesToControlFlow(sourceText: string): CodemodResult {
+  const doc = parseFragment(sourceText, { sourceCodeLocationInfo: true });
+
+  /**
+   * A separate parse pass, over `{{ }}`-interpolation-masked text, purely
+   * to detect genuine *input* corruption (e.g. a sibling element with an
+   * unterminated attribute) — kept apart from the real tree-building
+   * parse above so masking a copy of the text can never affect the real
+   * offsets/edits this codemod computes. `invalid-first-character-of-
+   * tag-name` (a bare `<` in ordinary text) is the one error class real
+   * AngularJS templates trip constantly and harmlessly (`{{ a < b }}`),
+   * confirmed by direct execution — masking those specific spans (the
+   * same technique `assert-valid-template.ts` uses for its own output-
+   * side check) is more precise than an earlier version's blanket
+   * code-level suppression, which risked also swallowing a genuine
+   * corruption that happened to produce the identical error code.
+   */
   const errors: string[] = [];
-  const doc = parseFragment(sourceText, {
-    sourceCodeLocationInfo: true,
-    onParseError: (err) => {
-      if (!HARMLESS_INPUT_PARSE_ERROR_CODES.has(err.code)) errors.push(err.code);
-    },
+  parseFragment(maskInterpolations(sourceText), {
+    onParseError: (err) => errors.push(err.code),
   });
+
+  /**
+   * `duplicate-attribute` — found by adversarial review, confirmed by
+   * direct execution: parse5's own `sourceCodeLocation.attrs` map is
+   * keyed by attribute name and only records the *first* occurrence's
+   * location, so a second `ng-if="y"` after an already-seen `ng-if="x"`
+   * is completely invisible to `processElement` below — it's silently
+   * never removed, left stranded on the transformed element,
+   * `matched: true`. Real duplicate directive attributes are themselves
+   * malformed input (zero real-fixture evidence), so the whole file is
+   * conservatively skipped rather than risking a partial, misleadingly
+   * "successful" transform.
+   */
+  if (errors.includes('duplicate-attribute')) {
+    return {
+      matched: false,
+      reason: 'input HTML has a duplicate attribute somewhere in the file — ambiguous which occurrence is real, not safely transformable',
+    };
+  }
 
   const edits: PositionEdit[] = [];
   const warnings: string[] = [];

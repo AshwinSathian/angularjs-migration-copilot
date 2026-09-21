@@ -205,6 +205,35 @@ describe('transformNgDirectivesToControlFlow', () => {
     expect(result.reason).toContain('no value');
   });
 
+  it('skips an ng-if with an explicitly empty or whitespace-only value the same way as a valueless one', () => {
+    // Found by a later adversarial round, confirmed by direct execution:
+    // getAttrValue's earlier fix only caught a missing "=" entirely —
+    // ng-if="" or ng-if="   " still returned an (empty) string, which
+    // planIf happily turned into an invalid `@if () {` — matched: true,
+    // no warning, a real syntax error in the emitted template.
+    for (const before of ['<div ng-if="">x</div>', '<div ng-if="   ">x</div>']) {
+      const result = transformNgDirectivesToControlFlow(before);
+      expect(result.matched).toBe(false);
+      if (result.matched) throw new Error('unreachable');
+      expect(result.reason).toContain('no value');
+    }
+  });
+
+  it('conservatively skips the whole file when an element has a duplicate directive attribute', () => {
+    // Found by adversarial review, confirmed by direct execution: parse5's
+    // sourceCodeLocation.attrs is keyed by name and only records the
+    // *first* occurrence of a duplicate attribute — a second `ng-if="y"`
+    // is completely invisible to processElement, so it was silently left
+    // stranded, untransformed, on the wrapped element (matched: true).
+    const before = '<li ng-if="x" ng-if="y">z</li>';
+
+    const result = transformNgDirectivesToControlFlow(before);
+
+    expect(result.matched).toBe(false);
+    if (result.matched) throw new Error('unreachable');
+    expect(result.reason).toContain('duplicate attribute');
+  });
+
   it('reports no match for a file with no ng-repeat/ng-if/ng-show directive', () => {
     const before = '<div class="static">hello</div>';
 

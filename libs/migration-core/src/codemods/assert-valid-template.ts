@@ -1,4 +1,5 @@
 import { parseFragment } from 'parse5';
+import { findMatchingParen, maskControlFlowHeaders, maskInterpolations, skipQuoted } from './html-text-utils.js';
 
 /**
  * The HTML-pattern equivalent of `assert-compiles.ts`'s role for the
@@ -14,14 +15,18 @@ import { parseFragment } from 'parse5';
  * / `@if (...) {` / `}` block delimiters (skipping quoted-string
  * content, so a string literal inside a condition expression can't
  * desync the count), and a `parseFragment` pass with `onParseError`
- * enabled over the *whole* output. `@for`/`@if`/bare braces aren't valid
- * HTML tag syntax, but a lenient HTML5 parser never hard-fails on
- * unrecognized text — it treats them as inert text nodes (confirmed by
- * direct probe, zero parse errors) — so this second check only fires on
- * genuine underlying-markup corruption (e.g. an attribute-splice bug
- * that leaves a tag's quote unterminated), which the lenient parser
- * *does* still flag via `onParseError` (confirmed: an unterminated
- * `class="x` attribute produces a real `eof-in-tag` error).
+ * enabled over the *whole* output — after masking `<`/`>` inside both
+ * codemod-emitted headers and `{{ }}` interpolation (found by
+ * adversarial review: the first version only masked headers, so a
+ * completely ordinary, untouched `{{ a < b }}` left in the codemod's
+ * *body* output still tripped a false positive). `@for`/`@if`/bare
+ * braces aren't valid HTML tag syntax, but a lenient HTML5 parser never
+ * hard-fails on unrecognized text — it treats them as inert text nodes
+ * (confirmed by direct probe, zero parse errors) — so this second check
+ * only fires on genuine underlying-markup corruption (e.g. an
+ * attribute-splice bug that leaves a tag's quote unterminated), which
+ * the lenient parser *does* still flag via `onParseError` (confirmed: an
+ * unterminated `class="x` attribute produces a real `eof-in-tag` error).
  *
  * **Known, accepted limitation** (found by adversarial review, zero
  * real fixture evidence, deliberately not fixed): `assertBalancedBlocks`
@@ -45,43 +50,6 @@ import { parseFragment } from 'parse5';
 export function assertValidTemplate(outputHtml: string): void {
   assertBalancedBlocks(outputHtml);
   assertNoHtmlParseErrors(outputHtml);
-}
-
-/**
- * Past the closing quote (or past the end, for an unterminated string —
- * the overall brace-balance check below still catches that case).
- * Backslash-escape-aware — found by adversarial review: an escaped
- * quote inside a header condition (`'don\'t'`) was previously read as
- * the string's own terminator, desyncing the paren/brace count for
- * everything after it.
- */
-function skipQuoted(html: string, start: number): number {
-  const quote = html[start];
-  let i = start + 1;
-  while (i < html.length && html[i] !== quote) {
-    i += html[i] === '\\' ? 2 : 1;
-  }
-  return i + 1;
-}
-
-/** Index of the `)` matching the `(` at `openIndex`, respecting nested parens and quoted-string content (e.g. a `'-date'` literal inside a track expression). */
-function findMatchingParen(html: string, openIndex: number): number {
-  let depth = 0;
-  let i = openIndex;
-  while (i < html.length) {
-    const ch = html[i];
-    if (ch === '"' || ch === "'") {
-      i = skipQuoted(html, i);
-      continue;
-    }
-    if (ch === '(') depth++;
-    else if (ch === ')') {
-      depth--;
-      if (depth === 0) return i;
-    }
-    i++;
-  }
-  throw new Error(`assertValidTemplate: unterminated "(" starting at offset ${openIndex}\n\n--- output ---\n${html}`);
 }
 
 function assertBalancedBlocks(html: string): void {
@@ -133,43 +101,10 @@ function assertBalancedBlocks(html: string): void {
   }
 }
 
-/**
- * `@for (...)`/`@if (...)` header expressions aren't HTML — they can
- * freely contain `<`/`>` (a length check, `items.length < 5`, is a
- * common real ng-if/ng-repeat shape). An HTML5 tokenizer reads a bare
- * `<` as the possible start of a tag and reports a real (if harmless —
- * confirmed by direct probe that the tokenizer still recovers and
- * treats it as text either way) `onParseError`, which would make this
- * checker reject perfectly valid codemod output. Found by adversarial
- * review, confirmed by direct execution (`@if (a < b) { ... }` produces
- * `invalid-first-character-of-tag-name`; `@if (a > b) { ... }` does
- * not). Masked out here — replacing only `<`/`>` inside each header's
- * own parenthesized span with a space, same length, everything else
- * (including any genuine markup corruption elsewhere in the string)
- * left untouched for the real check below to still catch.
- */
-function maskControlFlowExpressions(html: string): string {
-  let result = '';
-  let i = 0;
-  while (i < html.length) {
-    if (html.startsWith('@for (', i) || html.startsWith('@if (', i)) {
-      const openParen = html.indexOf('(', i);
-      const closeParen = findMatchingParen(html, openParen);
-      result += html.slice(i, openParen + 1);
-      result += html.slice(openParen + 1, closeParen).replace(/[<>]/g, ' ');
-      result += html[closeParen];
-      i = closeParen + 1;
-      continue;
-    }
-    result += html[i];
-    i++;
-  }
-  return result;
-}
-
 function assertNoHtmlParseErrors(html: string): void {
   const errors: string[] = [];
-  parseFragment(maskControlFlowExpressions(html), {
+  const masked = maskInterpolations(maskControlFlowHeaders(html));
+  parseFragment(masked, {
     sourceCodeLocationInfo: true,
     onParseError: (err) => errors.push(err.code),
   });
