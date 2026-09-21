@@ -255,6 +255,56 @@ describe('transformRoutesToRouterConfig', () => {
     expect(result.reason).toContain('collides with an existing name');
   });
 
+  it('detects a collision even when the pre-existing binding is declared inside the enclosing IIFE, not the file top level', () => {
+    // Found by adversarial review, confirmed by direct execution:
+    // hasExistingTopLevelBinding (class-wrapping.ts) originally only
+    // checked bindings at the source file's direct-child level, but
+    // nearestInsertionPointStart deliberately inserts the new `const
+    // <Name>Routes` *inside* the enclosing IIFE — exactly the scope the
+    // file-top-level-only check couldn't see into. Before the fix, this
+    // constructed input silently emitted `component: DashboardComponent`
+    // referencing the unrelated pre-existing `var`, matched: true, no
+    // warning — the worst class of bug this project's review culture
+    // watches for.
+    const before = [
+      '(function () {',
+      "  'use strict';",
+      "  var DashboardComponent = 'not a real component, just a string constant';",
+      "  angular.module('app').config(['$routeProvider', function config($routeProvider) {",
+      "    $routeProvider.when('/dashboard', { templateUrl: 'dashboard.html' });",
+      '  }]);',
+      '})();',
+    ].join('\n');
+
+    const result = transformRoutesToRouterConfig(before);
+
+    assertUnmatched(result);
+    expect(result.reason).toContain('DashboardComponent');
+    expect(result.reason).toContain('collides with an existing name');
+  });
+
+  it('detects a routes-constant-name collision inside the enclosing IIFE too, not just the file top level', () => {
+    // Second half of the same bug: an unrelated `var AppRoutes` inside the
+    // same IIFE the codemod inserts into previously went undetected,
+    // producing a real TS2451 "cannot redeclare block-scoped variable"
+    // once the codemod's own `const AppRoutes` landed right next to it.
+    const before = [
+      '(function () {',
+      "  'use strict';",
+      "  var AppRoutes = 'unrelated pre-existing binding inside the IIFE';",
+      "  angular.module('app').config(['$routeProvider', function config($routeProvider) {",
+      "    $routeProvider.when('/dashboard', { templateUrl: 'dashboard.html' });",
+      '  }]);',
+      '})();',
+    ].join('\n');
+
+    const result = transformRoutesToRouterConfig(before);
+
+    assertUnmatched(result);
+    expect(result.reason).toContain('AppRoutes');
+    expect(result.reason).toContain('collides with an existing name');
+  });
+
   it('does not treat an unrelated .config() call as a route registration', () => {
     const before = [
       "angular.module('app').config(function (ChartJsProvider, baConfigProvider) {",
