@@ -354,4 +354,82 @@ describe('transformEventBusToSubject', () => {
     expect(result.reason).toContain('2fa-required');
     expect(result.reason).toContain('does not sanitize to a valid identifier');
   });
+
+  it('does not match $emit/$on-named methods on an unrelated object that has nothing to do with AngularJS scope semantics', () => {
+    // Found by adversarial review: matching by method name alone (no
+    // receiver check) false-positives on any object that merely happens
+    // to expose same-named methods.
+    const before = [
+      'var myCustomBus = {',
+      '  $emit: function (name, payload) {},',
+      '  $on: function (name, fn) {},',
+      '};',
+      "myCustomBus.$emit('ready', {});",
+      "myCustomBus.$on('ready', function () {});",
+    ].join('\n');
+
+    const result = transformEventBusToSubject(before);
+
+    assertUnmatched(result);
+  });
+
+  it('matches a directive link function\'s plain "scope" parameter, not just $scope/$rootScope', () => {
+    const before = [
+      "angular.module('app').directive('foo', function () {",
+      '  return {',
+      '    link: function (scope) {',
+      "      scope.$emit('ready', {});",
+      '    },',
+      '  };',
+      '});',
+      "angular.module('app').controller('B', function ($scope) {",
+      "  $scope.$on('ready', function () {});",
+      '});',
+    ].join('\n');
+
+    const result = transformEventBusToSubject(before);
+
+    assertMatched(result);
+    assertCompiles(result.output);
+  });
+
+  it('skips when a pre-existing import binding collides with a name the generated class body references (Subject/Injectable)', () => {
+    // hasExistingTopLevelBinding (class-wrapping.ts) previously checked
+    // only function/class/variable declarations, never import bindings —
+    // found by adversarial review, confirmed by direct execution: a
+    // pre-existing `import { Subject } from './my-custom-subject';`
+    // silently shadowed the real rxjs Subject the emitted code depends
+    // on, with matched: true and no compile diagnostic to catch it.
+    const before = [
+      "import { Subject } from './my-custom-subject';",
+      "angular.module('app').controller('A', function ($scope) {",
+      "  $scope.$emit('ready', {});",
+      '});',
+      "angular.module('app').controller('B', function ($scope) {",
+      "  $scope.$on('ready', function () {});",
+      '});',
+    ].join('\n');
+
+    const result = transformEventBusToSubject(before);
+
+    assertUnmatched(result);
+    expect(result.reason).toContain('"Subject"');
+  });
+
+  it('skips when a pre-existing default or namespace import collides with the derived service class name', () => {
+    const before = [
+      "import EventBusService from './somewhere';",
+      "angular.module('app').controller('A', function ($scope) {",
+      "  $scope.$emit('ready', {});",
+      '});',
+      "angular.module('app').controller('B', function ($scope) {",
+      "  $scope.$on('ready', function () {});",
+      '});',
+    ].join('\n');
+
+    const result = transformEventBusToSubject(before);
+
+    assertUnmatched(result);
+    expect(result.reason).toContain('"EventBusService"');
+  });
 });

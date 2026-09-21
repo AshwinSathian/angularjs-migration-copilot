@@ -145,6 +145,25 @@ function toIdentifier(eventName: string, casing: 'camel' | 'pascal'): string {
 
 const SERVICE_CLASS_NAME = 'EventBusService';
 
+/**
+ * The real receiver names every `$emit`/`$broadcast`/`$on` call uses
+ * across all three vendored fixtures — a DI-injected `$scope`/`$rootScope`
+ * parameter, or a directive `link` function's own `scope`/`rootScope`
+ * parameter name. Detection is deliberately restricted to these rather
+ * than matching any `x.$emit(...)`/`x.$on(...)` call by method name alone
+ * — found by adversarial review, confirmed by direct execution: an
+ * unrestricted match also fires on an unrelated object that merely
+ * happens to expose same-named methods (e.g. a hand-rolled pub/sub with
+ * no connection to AngularJS scope semantics at all), a false positive
+ * with no real-fixture evidence to justify accepting. A full DI/symbol
+ * resolution (like `routes-to-router-config.ts` uses for
+ * `$routeProvider`/`$stateProvider`) isn't needed here — every real shape
+ * these fixtures use is a plain, unqualified identifier, and requiring an
+ * exact name match is the same "skip when ambiguous" conservatism as
+ * everywhere else in this pattern family, not a guess.
+ */
+const SCOPE_RECEIVER_NAMES = new Set(['$scope', '$rootScope', 'scope', 'rootScope']);
+
 export function transformEventBusToSubject(sourceText: string): CodemodResult {
   const project = new Project({
     useInMemoryFileSystem: true,
@@ -157,6 +176,9 @@ export function transformEventBusToSubject(sourceText: string): CodemodResult {
   forEachPropertyAccessCall(project, (call, expression) => {
     const method = expression.getName();
     if (method !== '$emit' && method !== '$broadcast' && method !== '$on') return;
+
+    const receiver = expression.getExpression();
+    if (!Node.isIdentifier(receiver) || !SCOPE_RECEIVER_NAMES.has(receiver.getText())) return;
 
     const [nameArg] = call.getArguments();
     if (!nameArg || !Node.isStringLiteral(nameArg)) return;
