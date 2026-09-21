@@ -4,6 +4,7 @@ export { transformControllerAsToClass } from './controlleras-to-class.js';
 export { transformDirectiveToComponent } from './directive-to-component.js';
 export { transformEventBusToSubject } from './event-bus-to-subject.js';
 export { transformFilterToPipe } from './filter-to-pipe.js';
+export { transformHttpThenToHttpClient } from './http-then-to-httpclient.js';
 export { transformRoutesToRouterConfig } from './routes-to-router-config.js';
 export { transformScopeAssignmentToClassProperty } from './scope-assignment-to-class-property.js';
 export type { CodemodResult } from './types.js';

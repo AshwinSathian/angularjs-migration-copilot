@@ -9,6 +9,7 @@ import {
   transformDirectiveToComponent,
   transformEventBusToSubject,
   transformFilterToPipe,
+  transformHttpThenToHttpClient,
   transformRoutesToRouterConfig,
   transformScopeAssignmentToClassProperty,
   type CodemodResult,
@@ -26,6 +27,7 @@ const CODEMODS: Record<string, (sourceText: string) => CodemodResult> = {
   'filter-to-pipe': transformFilterToPipe,
   'routes-to-router-config': transformRoutesToRouterConfig,
   'event-bus-to-subject': transformEventBusToSubject,
+  'http-then-to-httpclient': transformHttpThenToHttpClient,
 };
 
 const program = new Command();
