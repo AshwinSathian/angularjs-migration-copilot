@@ -10,6 +10,7 @@ import {
   transformEventBusToSubject,
   transformFilterToPipe,
   transformHttpThenToHttpClient,
+  transformNgDirectivesToControlFlow,
   transformRoutesToRouterConfig,
   transformScopeAssignmentToClassProperty,
   type CodemodResult,
@@ -28,6 +29,7 @@ const CODEMODS: Record<string, (sourceText: string) => CodemodResult> = {
   'routes-to-router-config': transformRoutesToRouterConfig,
   'event-bus-to-subject': transformEventBusToSubject,
   'http-then-to-httpclient': transformHttpThenToHttpClient,
+  'ng-control-flow': transformNgDirectivesToControlFlow,
 };
 
 const program = new Command();
