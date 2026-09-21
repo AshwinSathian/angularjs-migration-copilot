@@ -120,6 +120,15 @@ export function nearestInsertionPointStart(node: Node): number {
  * costs silently wrong or non-compiling output, which this codebase's own
  * review history treats as the worse failure by a wide margin.
  */
+export function hasExistingTopLevelBinding(sourceFile: SourceFile, name: string, ignore?: Node): boolean {
+  const hasDeclaration =
+    sourceFile.getDescendantsOfKind(SyntaxKind.FunctionDeclaration).some((d) => d.getName() === name && d !== ignore) ||
+    sourceFile.getDescendantsOfKind(SyntaxKind.ClassDeclaration).some((d) => d.getName() === name && d !== ignore) ||
+    sourceFile.getDescendantsOfKind(SyntaxKind.VariableDeclaration).some((d) => d.getName() === name && d !== ignore);
+  if (hasDeclaration) return true;
+  return importLocalBindingNames(sourceFile).includes(name);
+}
+
 /**
  * Every local binding name an `import` statement introduces — a default
  * import, a namespace import (`* as X`), or a named import, aliased or
@@ -147,14 +156,6 @@ function importLocalBindingNames(sourceFile: SourceFile): string[] {
     }
   }
   return names;
-}
-
-export function hasExistingTopLevelBinding(sourceFile: SourceFile, name: string, ignore?: Node): boolean {
-  const functions = sourceFile.getDescendantsOfKind(SyntaxKind.FunctionDeclaration).filter((d) => d.getName() === name);
-  const classes = sourceFile.getDescendantsOfKind(SyntaxKind.ClassDeclaration).filter((d) => d.getName() === name);
-  const variables = sourceFile.getDescendantsOfKind(SyntaxKind.VariableDeclaration).filter((d) => d.getName() === name);
-  if ([...functions, ...classes, ...variables].some((d) => d !== ignore)) return true;
-  return importLocalBindingNames(sourceFile).includes(name);
 }
 
 /**
