@@ -26,4 +26,9 @@ describe('runInSandbox', () => {
     const result = runInSandbox('function f() { while (true) {} }', [], { timeoutMs: 50 });
     expect(result.type).toBe('throw');
   });
+
+  it('preserves error messages that themselves start with "Error: " — regression for unsafe prefix-strip', () => {
+    const result = runInSandbox('function f() { throw new Error("Error: something specific"); }', []);
+    expect(result).toEqual({ type: 'throw', message: 'Error: something specific' });
+  });
 });

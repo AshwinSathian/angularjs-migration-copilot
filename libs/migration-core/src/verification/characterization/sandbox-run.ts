@@ -21,6 +21,13 @@ const DEFAULT_TIMEOUT_MS = 1000;
  * function — the caller (run-characterization.ts) treats every outcome,
  * including a timeout, as one more thing to diff against the other
  * side, not a reason to abort the whole verification run.
+ *
+ * Note on error handling (ADR-052): An Error thrown inside a vm context
+ * is not `instanceof` the outer realm's Error constructor (cross-realm
+ * identity). The catch block uses `'message' in error` instead of
+ * `instanceof Error` to reliably extract the message, which works because
+ * vm-thrown errors (including timeout errors) always carry a real
+ * `.message` property regardless of realm.
  */
 export function runInSandbox(
   functionSource: string,
@@ -44,10 +51,6 @@ export function runInSandbox(
       message = String((error as Record<string, unknown>).message);
     } else {
       message = String(error);
-    }
-    // Strip "Error: " prefix that might be added by error stringification
-    if (message.startsWith('Error: ')) {
-      message = message.substring(7);
     }
     return { type: 'throw', message };
   }
