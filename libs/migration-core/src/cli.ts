@@ -18,6 +18,7 @@ import {
 import { runIngest } from './ingest/index.js';
 import { runInventoryScan } from './inventory/index.js';
 import { scaffoldTargetWorkspace, verifyWorkspaceBuilds } from './scaffold/index.js';
+import { runVerificationGate } from './verification/index.js';
 
 const CODEMODS: Record<string, (sourceText: string) => CodemodResult> = {
   'array-di-to-constructor': transformArrayStyleDiToConstructor,
@@ -148,6 +149,32 @@ program
       console.log(result.output);
     }
   });
+
+program
+  .command('verify')
+  .description(
+    'Stage 4: run the compile + existing-test-suite checks against a migrated file already placed in a scaffolded workspace. Characterization testing (no prior coverage) is library-only for now — no CLI producer of a CharacterizationTarget exists yet.'
+  )
+  .argument('<workspaceDir>', 'an M0.5-scaffolded Angular workspace directory')
+  .option('-t, --artifact-type <type>', 'controller | service | filter | directive', 'service')
+  .option('-s, --spec <specPath>', 'path to a migrated spec file, relative to workspaceDir, if one exists')
+  .option('--ts-config <path>', 'app tsconfig path, relative to workspaceDir', 'tsconfig.app.json')
+  .action(
+    async (
+      workspaceDir: string,
+      options: { artifactType: string; spec?: string; tsConfig: string }
+    ) => {
+      const result = await runVerificationGate({
+        workspaceDir: resolve(workspaceDir),
+        artifactType: options.artifactType as 'controller' | 'service' | 'filter' | 'directive',
+        appTsConfigPath: options.tsConfig,
+        migratedSpecPath: options.spec,
+      });
+
+      console.log(JSON.stringify(result, null, 2));
+      if (result.tier === 'REJECTED') process.exitCode = 1;
+    }
+  );
 
 program.parseAsync(process.argv).catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : error);
