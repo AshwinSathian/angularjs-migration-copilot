@@ -25,7 +25,7 @@ export function runCharacterization(target: CharacterizationTarget): Characteriz
   if (!eligibility.eligible) return { eligible: false, reason: eligibility.reason };
 
   const inferredTypesExist = (target.parameterTypes ?? []).some((t) => t !== undefined);
-  if (target.callSiteArgLiterals.length < 2 && !inferredTypesExist) {
+  if (dedupeRows(target.callSiteArgLiterals).length < 2 && !inferredTypesExist) {
     return {
       eligible: false,
       reason: 'fewer than two distinct call-site examples and no inferable parameter types (§6.5)',

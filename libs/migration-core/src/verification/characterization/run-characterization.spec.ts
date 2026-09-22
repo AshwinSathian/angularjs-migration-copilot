@@ -61,4 +61,15 @@ describe('runCharacterization', () => {
     const result = runCharacterization(target);
     expect(result.eligible).toBe(true);
   });
+
+  it('two IDENTICAL call-site tuples (no inferable types) do not satisfy the two-distinct-example threshold (ADR-053)', () => {
+    const target: CharacterizationTarget = {
+      ...baseTarget,
+      parameterTypes: undefined,
+      callSiteArgLiterals: [[3], [3]],
+    };
+    const result = runCharacterization(target);
+    expect(result.eligible).toBe(false);
+    if (!result.eligible) expect(result.reason).toMatch(/distinct/);
+  });
 });
