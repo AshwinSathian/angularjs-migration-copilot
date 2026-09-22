@@ -46,4 +46,14 @@ describe('generateBoundaryValueRows', () => {
       expect(typeof row[1]).toBe('string');
     }
   });
+
+  it('covers null boundary value for array and object types', () => {
+    const arrayRows = generateBoundaryValueRows(['array']);
+    const arrayValues = arrayRows.map((r) => r[0]);
+    expect(arrayValues).toContain(null);
+
+    const objectRows = generateBoundaryValueRows(['object']);
+    const objectValues = objectRows.map((r) => r[0]);
+    expect(objectValues).toContain(null);
+  });
 });

@@ -4,8 +4,8 @@ const BOUNDARY_SETS: Record<ParameterType, readonly unknown[]> = {
   string: ['', 'x'],
   number: [0, 1, -1],
   boolean: [true, false],
-  array: [[], [1]],
-  object: [{}, { k: 'v' }],
+  array: [[], [1], null],
+  object: [{}, { k: 'v' }, null],
 };
 
 const POPULATED_DEFAULT: Record<ParameterType, unknown> = {
@@ -25,6 +25,10 @@ const POPULATED_DEFAULT: Record<ParameterType, unknown> = {
  * inferable type contributes `undefined` to every row it isn't the one
  * being varied, and no rows at all if it's the only parameter (no type
  * to generate boundaries from).
+ *
+ * For `array` and `object` parameter types (reference/nullable shapes),
+ * boundary values include `null` to cover optional parameters defaulting
+ * to null or receiving null at call sites.
  */
 export function generateBoundaryValueRows(
   parameterTypes: readonly (ParameterType | undefined)[]
