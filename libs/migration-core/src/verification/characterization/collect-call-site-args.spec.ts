@@ -57,4 +57,24 @@ describe('collectCallSiteArgLiterals', () => {
     const project = projectWith({ '/def.ts': 'function other(a) { return a; }' });
     expect(collectCallSiteArgLiterals(project, 'missing')).toEqual([]);
   });
+
+  it('known limitation: folds in a same-named function reachable via an unrelated receiver (name-text matching, not symbol resolution)', () => {
+    const project = projectWith({
+      '/def.ts': 'function total(a, b) { return a + b; }',
+      '/use.ts': `
+        import {} from "./def";
+        total(1, 2);
+        const someObj = { total: (a, b) => a - b };
+        someObj.total(100, 200);
+      `,
+    });
+    const results = collectCallSiteArgLiterals(project, 'total');
+    // Both the free function total(1, 2) and the method someObj.total(100, 200)
+    // are collected because matching is text-based: both call sites have the callee
+    // name "total". Real symbol resolution would distinguish them. This is accepted
+    // because this function is not used in Tasks 6–14's tiering logic (exported only
+    // for future use).
+    expect(results).toContainEqual([1, 2]);
+    expect(results).toContainEqual([100, 200]);
+  });
 });

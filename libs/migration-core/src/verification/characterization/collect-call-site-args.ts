@@ -46,6 +46,22 @@ function tupleKey(tuple: readonly unknown[]): string {
  * tuple, and a wrong guessed input would produce false confidence in
  * exactly the way §6.5 explicitly warns against for the single-input
  * degenerate case.
+ *
+ * Known limitations (not fixed, documented as accepted because this function
+ * is never wired into this milestone's tiering logic — Tasks 6–14 do not import
+ * or call it; it's exported only for future external use via the Task 12 barrel):
+ * (1) Callee matching is name-text-based, not symbol-resolution-based. If the
+ * codebase defines both a free function `total()` and an unrelated object/class
+ * method also named `total`, calls to both will be folded into a single
+ * collection — e.g., `total(1, 2)` and `someObj.total(100, 200)` both appear
+ * in results as tuples `[1, 2]` and `[100, 200]`. Real symbol resolution (via
+ * `findReferencesAsNodes()`, the discipline `class-wrapping.ts` already
+ * established) would distinguish them, but that's larger scope. (2) Negative
+ * numeric literals like `-5` are parsed as `PrefixUnaryExpression` (not
+ * `NumericLiteral`), so a call like `f(-5)` contributes no tuple. However,
+ * Task 6's `generateBoundaryValueRows` already seeds the `number` boundary
+ * set with `-1`, so negative-input coverage for eligible functions is not
+ * actually lost overall, just not sourced from real call sites.
  */
 export function collectCallSiteArgLiterals(
   project: Project,
