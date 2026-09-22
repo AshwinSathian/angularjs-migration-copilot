@@ -1,6 +1,6 @@
 # M2 — Verification Gate
 
-**Status:** not started
+**Status:** done
 **Estimate:** 1.5–2.5 weeks
 **Depends on:** M0.5 (doesn't strictly need M1, but in practice needs something to verify)
 

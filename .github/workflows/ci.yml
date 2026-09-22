@@ -20,9 +20,61 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # Path-filter used by verification-negative-controls below. Runs
+  # unconditionally (cheap: checkout + a local diff, no test execution) so
+  # its output is always available regardless of event type — avoids any
+  # ambiguity around GitHub Actions' skip/success() semantics for a
+  # dependent job's own `if:` condition. See docs/decisions.md ADR-056 for
+  # why this replaced the milestone plan's own first-draft pseudocode,
+  # which referenced a `github.event.pull_request.changed_files` field
+  # that doesn't exist as a usable `if:` expression.
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      verification: ${{ steps.filter.outputs.verification }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            verification:
+              - 'libs/migration-core/src/verification/**'
+              - 'libs/migration-core/verification/**'
+
+  # Permanently enforces the three planted negative-control fixtures
+  # (libs/migration-core/verification/__fixtures__/negative-controls/) per
+  # CLAUDE.md's verification-gate rule and docs/milestones/m2-verification.md's
+  # definition of done. Runs unconditionally on a direct push to main, and
+  # on a pull_request only when it touches the verification module — see
+  # the `changes` job above.
+  verification-negative-controls:
+    name: Verification gate — negative controls
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.verification == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      # No `nx build` step: the integration spec imports directly from
+      # `src/` (via vitest's own esbuild transform), not from `dist/` — see
+      # ADR-056 and ADR-055 (nx build can silently report success while
+      # writing zero output; this job simply doesn't depend on it).
+      - run: npx vitest run --config libs/migration-core/vitest.integration.config.mts
+        timeout-minutes: 15
+
   # The rest of this pipeline (lint-and-typecheck, unit-tests,
-  # verification-negative-controls, dependency-boundary-check,
-  # fixture-integration) gets added incrementally as each milestone lands
-  # the tooling it depends on. See docs/architecture.md §5 and
-  # docs/decisions.md ADR-009 for why this file doesn't pretend those jobs
-  # exist yet.
+  # dependency-boundary-check, fixture-integration) gets added
+  # incrementally as each milestone lands the tooling it depends on. See
+  # docs/architecture.md §5 and docs/decisions.md ADR-009 for why this file
+  # doesn't pretend those jobs exist yet.
