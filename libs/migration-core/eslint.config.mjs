@@ -21,6 +21,7 @@ export default [
     },
   },
   {
-    ignores: ['**/out-tsc'],
+    // Planted, deliberately-broken gate controls — not project source.
+    ignores: ['**/out-tsc', 'verification/__fixtures__/**/0*/**'],
   },
 ];
