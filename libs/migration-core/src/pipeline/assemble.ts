@@ -103,8 +103,52 @@ function importsFor(declaration: Node): string {
   return [...bySource].map(([source, symbols]) => `import { ${symbols.join(', ')} } from '${source}';\n`).join('');
 }
 
+/**
+ * Patterns #1 and #2 target "class property" (docs/product-spec.md §6.3)
+ * but emit only the constructor's assignments, never the properties, so
+ * every `this.x = y` is `TS2339` under the workspace's strict settings.
+ * This declares each assigned field (`x: any;`) — completing those two
+ * patterns' stated output, nothing more: no types are inferred and no
+ * statement is rewritten.
+ *
+ * Counted: `this.x = …` whose nearest non-arrow function is the
+ * constructor, and `alias.x = …` at any depth where the constructor
+ * declares `var alias = this` (a closure keeps `alias` correct inside
+ * callbacks; `this` it does not).
+ */
+function declareAssignedFields(declaration: ClassDeclaration): void {
+  const ctor = declaration.getConstructors()[0];
+  if (!ctor) return;
+  const aliases = new Set(
+    ctor
+      .getDescendantsOfKind(SyntaxKind.VariableDeclaration)
+      .filter((v) => v.getInitializer()?.getKind() === SyntaxKind.ThisKeyword)
+      .map((v) => v.getName())
+  );
+  const names = new Set<string>();
+  for (const assignment of ctor.getDescendantsOfKind(SyntaxKind.BinaryExpression)) {
+    const left = assignment.getLeft();
+    if (assignment.getOperatorToken().getKind() !== SyntaxKind.EqualsToken || !Node.isPropertyAccessExpression(left)) continue;
+    const target = left.getExpression();
+    const viaAlias = Node.isIdentifier(target) && aliases.has(target.getText());
+    const viaThis =
+      target.getKind() === SyntaxKind.ThisKeyword &&
+      target.getFirstAncestor(
+        (a) => Node.isFunctionExpression(a) || Node.isFunctionDeclaration(a) || Node.isMethodDeclaration(a) || Node.isConstructorDeclaration(a) || Node.isGetAccessorDeclaration(a) || Node.isSetAccessorDeclaration(a)
+      ) === ctor;
+    if (viaAlias || viaThis) names.add(left.getName());
+  }
+  const taken = new Set([
+    ...declaration.getMembers().map((m) => (Node.isConstructorDeclaration(m) ? '' : (m as { getName?: () => string }).getName?.() ?? '')),
+    ...ctor.getParameters().filter((p) => p.isParameterProperty()).map((p) => p.getName()),
+  ]);
+  const fields = [...names].filter((name) => !taken.has(name));
+  if (fields.length > 0) declaration.insertProperties(0, fields.map((name) => ({ name, type: 'any' })));
+}
+
 /** The declaration's text with `export` added in modifier position (after any decorators), via the AST rather than string surgery. */
 function exportedText(declaration: Node): string {
+  if (Node.isClassDeclaration(declaration) && declaration.getDecorators().length === 0) declareAssignedFields(declaration);
   if (Node.isClassDeclaration(declaration) || Node.isVariableStatement(declaration)) declaration.setIsExported(true);
   return declaration.getText();
 }
@@ -129,9 +173,11 @@ function templateUrlOf(declaration: Node): string | undefined {
  * the `@angular/*`/`rxjs` imports it uses, nothing else. The AngularJS
  * registration code the codemod left beside it stays behind.
  *
- * It does not repair what the codemod produced. A constructor parameter
- * typed `any`, an undeclared field, a reference to a component that was
- * never migrated — all are emitted as-is, for the gate to judge.
+ * One completion is applied — fields a wrapped constructor assigns are
+ * declared (`declareAssignedFields`). Beyond that it does not repair
+ * what the codemod produced: a DI parameter typed `any`, a free
+ * AngularJS global, a reference to a component that was never migrated
+ * are all emitted as-is, for the gate to judge.
  */
 export function assembleScript(sourcePath: string, sourceText: string): AssembledFile {
   const project = new Project({ useInMemoryFileSystem: true });

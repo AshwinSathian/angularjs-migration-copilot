@@ -1,6 +1,6 @@
 # M2 — Verification Gate
 
-**Status:** code-complete on `worktree-m2-verification-gate`, reopened 2026-10-09 — see "Reopened" below
+**Status:** fix pass done, draft [PR #23](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/23) green — awaiting the human line-by-line review; see "Reopened" below
 **Estimate:** 1.5–2.5 weeks
 **Depends on:** M0.5 (doesn't strictly need M1, but in practice needs something to verify)
 
