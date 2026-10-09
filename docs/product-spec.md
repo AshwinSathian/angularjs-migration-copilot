@@ -145,6 +145,8 @@ A golden master captures the AngularJS code's *existing* behavior, bugs included
 
 Every file exits tagged **HIGH** (real tests passed), **MEDIUM** (compiled clean plus a passing characterization diff, no prior coverage), or **REJECTED** (failed compile or characterization diff). Never a bare pass or fail.
 
+**v1 amendment (2026-10-09, [decisions.md](decisions.md) ADR-059–061):** v1 reports **MEDIUM**, **LOW** (compiled clean, behaviour not verifiable — flagged for manual review), and **REJECTED**. HIGH is not reported: legacy Karma/angular-mocks suites cannot run against migrated Angular classes. Step 1 runs the Angular compiler, not bare `tsc`, which does not check decorators, DI tokens, or templates. The gate applies to mechanical (Stage 2) output as well as Stage 3 patches.
+
 ### 6.6 Stage 5 — Report + PR
 
 Per-file side-by-side rendering — old AngularJS content next to new Angular content, not a line-diff. The two are structurally different enough that a unified diff is close to unreadable. Each entry carries transform type, confidence tier, compile/test logs, and the run-wide mechanical-hit-rate and characterization-eligibility-rate (broken down by artifact type per §6.5), reported honestly.
@@ -258,6 +260,7 @@ Before any fixture repo's migrated output is published on the hosted demo, its L
 | M0.5 | Target workspace scaffolding (§6.2a) | 2–3 days |
 | M1 | Deterministic codemod library (10 patterns) against 2–3 real repos | 2–3 weeks |
 | M2 | Verification harness: sandboxed compile/test, characterization-test generator, input-generation and diff-tolerance logic (§6.5) | 1.5–2.5 weeks |
+| M2.5 | Pipeline assembler: codemod output emitted as real files into the target workspace, gate run on mechanical output (ADR-058) | not estimated |
 | M3 | LLM fallback plus file-backed job-level scheduler (Mongo-backed version deferred to M4) | 1–2 weeks |
 | M4 | NestJS + Angular + Mongo web layer, scheduler promoted to Mongo-backed | 1–1.5 weeks |
 | M5 | Fixture-repo demo runs, license/NOTICE verification, real numbers published | 1 week |
