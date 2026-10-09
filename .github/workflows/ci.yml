@@ -73,8 +73,32 @@ jobs:
       - run: npx vitest run --config libs/migration-core/vitest.integration.config.mts
         timeout-minutes: 15
 
-  # The rest of this pipeline (lint-and-typecheck, unit-tests,
-  # dependency-boundary-check, fixture-integration) gets added
-  # incrementally as each milestone lands the tooling it depends on. See
-  # docs/architecture.md §5 and docs/decisions.md ADR-009 for why this file
-  # doesn't pretend those jobs exist yet.
+  # Lint (including the module-boundary rule in eslint.config.mjs),
+  # typecheck, and the unit suite for every project. Fixture submodules are
+  # not checked out: no unit spec reads them.
+  checks:
+    name: Lint, typecheck, unit tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx nx run-many -t lint,typecheck,test
+      # Dependency-boundary check at the installed-tree level: the lint rule
+      # catches a stray import, this catches a framework package arriving
+      # transitively through migration-core's own production dependencies.
+      - name: migration-core production dependency tree is framework-free
+        run: |
+          tree="$(npm ls -w migration-core --omit=dev --all --parseable)"
+          if echo "$tree" | grep -E 'node_modules/(@angular|@nestjs|mongodb|mongoose)(/|$)'; then
+            echo "::error::framework dependency in migration-core's production tree"
+            exit 1
+          fi
+
+  # fixture-integration gets added once the pipeline it runs exists
+  # (M2.5). See docs/architecture.md §5 and docs/decisions.md ADR-009.

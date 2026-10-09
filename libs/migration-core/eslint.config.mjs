@@ -1,7 +1,8 @@
-import baseConfig from '../../eslint.config.mjs';
+import baseConfig, { frameworkFreeLib } from '../../eslint.config.mjs';
 
 export default [
   ...baseConfig,
+  frameworkFreeLib,
   {
     files: ['**/*.json'],
     rules: {
