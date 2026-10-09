@@ -1,6 +1,6 @@
 # M2 — Verification Gate
 
-**Status:** done — merged 2026-10-09; see `docs/PROGRESS.md` and ADR-068 (human line-by-line read still owed)
+**Status:** built and verified, PR open, CI green; see `docs/PROGRESS.md` — human line-by-line read owed (ADR-068)
 **Estimate:** 1.5–2.5 weeks
 **Depends on:** M0.5 (doesn't strictly need M1, but in practice needs something to verify)
 
