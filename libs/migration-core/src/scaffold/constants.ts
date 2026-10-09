@@ -3,4 +3,4 @@
  * docs/decisions.md ADR-020 for how this was verified against the live npm
  * registry rather than assumed from cached docs.
  */
-export const DEFAULT_ANGULAR_CLI_VERSION = '22.1.8';
+export const DEFAULT_ANGULAR_CLI_VERSION = '22.2.2';

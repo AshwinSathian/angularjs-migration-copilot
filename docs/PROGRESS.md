@@ -27,7 +27,7 @@ Keep this section short. It states what is true now; the reasoning and the bugs 
 
 **Built and verified.**
 - **M0** `ingest/`, `inventory/`, `libs/secrets-scan` — tooling detection, AST inventory, secrets redaction. CLI: `inventory`.
-- **M0.5** `scaffold/` — real Angular workspace via `ng new` (pinned `@angular/cli@22.1.8`), confirmed with `ng build`. CLI: `scaffold`.
+- **M0.5** `scaffold/` — real Angular workspace via `ng new` (pinned `@angular/cli@22.2.2`, ADR-069), confirmed with `ng build`. CLI: `scaffold`.
 - **M1** `codemods/` — all 10 patterns, each a single-file string transform. CLI: `codemod`. On its own a codemod's output is not an Angular file (it leaves the AngularJS registration beside the new class); M2.5 is what makes it one.
 - **M2** `verification/` — compile check through the Angular compiler (`ngc`), optional supplied spec, characterization diff in a `node:vm` sandbox, one pure tiering function (`decideTier`): **MEDIUM / LOW / REJECTED**. Nine real, unmocked controls (4 negative asserting the failed check and its evidence, 3 positive, 2 false-accept regressions). CLI: `verify`.
 - **M2.5** `pipeline/` — `migrate <repo> <workspace>`: every codemod per file, output lifted into standalone exported `.ts` files with imports inside the scaffolded workspace, compiled in rounds so each file is judged on its own errors, each artifact tiered by the gate, JSON report.
@@ -58,13 +58,12 @@ Why things are rejected, most common first: a free AngularJS-era global (`angula
 - In `blur-admin`, 149 of 213 files match no pattern at all (103 scripts, 46 templates), and 27 of the 62 "matched" files are templates pattern #7 transformed that nothing compiled — a template is only compiled when a migrated component owns it, and only 2 do (both rejected). The same holds for the one transformed template in each of the other two fixtures.
 - `collect-call-site-args.ts` matches callees by name and nothing calls it (ADR-050). Filters are called from templates, which carry no literal arguments.
 - `nx build migration-core` can exit 0 having written nothing (ADR-055; seen again 2026-10-09). `npx tsc -b libs/migration-core/tsconfig.lib.json` is the build that can be trusted.
-- Dependabot #25 (`@angular/cli` 22.1.8 → 22.2.2) fails `checks` by design: `scaffold/constants.ts` pins the same version and a spec holds the two together. Do not merge it as is — bumping means changing the constant too and re-running scaffold, `ng build` and the gate controls (ADR-066 chose not to yet). #26 and #27 are lockfile-only and green.
 - `npm audit --omit=dev`: 3 high, all one advisory in `braces` (via `fast-glob` → `micromatch`), no fix published. The glob patterns are this project's own constants, never read from a target repo, so the advisory's input is not attacker-controlled here; Node 24's built-in `fs.promises.glob` would remove the dependency outright. Dev-tooling advisories (`axios`, `proxy-addr`, `smol-toml`, … under `nx`/`@angular/cli`) are open too; Dependabot could not auto-fix `axios` or `brace-expansion` because of version conflicts.
 - Branch protection requires only the gitleaks check; `Lint, typecheck, unit tests` is not a required check yet, so a red PR is still mergeable.
 - No sandbox: the compiler and test runner run on the host, and `node:vm` (characterization) is not a security boundary. Only run `migrate` against code you trust.
 - `ng-morph` is named in the spec as an AST engine and has never been needed or installed.
 - The two previously-unseen repos the v1 definition of done requires have not been chosen.
-- Versions re-checked 2026-10-09, deliberately not bumped (ADR-066). Revisit Node 26 after it becomes Active LTS on 2026-10-28.
+- Nx 23.3 and TypeScript 7 deliberately not adopted (ADR-066). Revisit Node 26 after it becomes Active LTS on 2026-10-28.
 
 ## What's next — prompt for the next session
 
