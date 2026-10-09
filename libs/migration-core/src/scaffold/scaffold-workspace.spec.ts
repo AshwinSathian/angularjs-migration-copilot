@@ -47,7 +47,7 @@ describe('scaffoldTargetWorkspace', () => {
       'npx',
       [
         '--yes',
-        '@angular/cli@22.1.8',
+        '@angular/cli@22.2.2',
         'new',
         'demo-app',
         '--directory',
@@ -60,7 +60,7 @@ describe('scaffoldTargetWorkspace', () => {
       expect.objectContaining({ cwd: parentDir })
     );
     expect(result.success).toBe(true);
-    expect(result.angularCliVersion).toBe('22.1.8');
+    expect(result.angularCliVersion).toBe('22.2.2');
   });
 
   it('honors an explicit angularCliVersion override', async () => {
