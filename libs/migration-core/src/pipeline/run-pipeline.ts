@@ -35,6 +35,8 @@ export interface ArtifactRecord {
   readonly tier: VerificationResult['tier'];
   readonly reason: string;
   readonly diagnostics: readonly CompileDiagnostic[];
+  /** Work still owed for this artifact to run, even where it compiled — see `AssembledDeclaration.followUps`. */
+  readonly followUps: readonly string[];
 }
 
 export interface SourceFileRecord {
@@ -271,6 +273,7 @@ export async function runPipeline(options: {
       reason:
         result.tier === 'MEDIUM' ? `characterization matched on ${result.characterization.casesRun} inputs` : result.reason,
       diagnostics: compile.passed ? [] : compile.diagnostics,
+      followUps: item.declaration.followUps,
     });
   }
 

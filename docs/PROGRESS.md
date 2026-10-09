@@ -11,8 +11,8 @@ Update this file at the end of every session — rewrite the status table and "W
 | M0 — Inventory scanner | done | [#1](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/1) |
 | M0.5 — Target workspace scaffold | done | [#3](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/3) |
 | M1 — Deterministic codemods | done (10/10 patterns) | [#5](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/5), [#6](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/6), [#8](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/8), [#10](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/10), [#11](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/11), [#12](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/12), [#13](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/13), [#15](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/15), [#16](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/16), [#17](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/17), [#18](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/18), [#19](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/19), [#21](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/21) |
-| M2 — Verification gate | done — merged after an agent review; **human line-by-line read of `verification/` still owed** (ADR-068) | [#23](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/23) |
-| M2.5 — Pipeline assembler | done — run on all three fixtures | [#24](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/24) |
+| M2 — Verification gate | done — maintainer has read `verification/` line by line (ADR-070) | [#23](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/23) |
+| M2.5 — Pipeline assembler | done — run on three fixtures and two unseen repos | [#24](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/24) |
 | M3 — LLM fallback + scheduler | not started | — |
 | M4 — Web layer | not started | — |
 | M5 — Fixtures, licensing, published report | not started | — |
@@ -32,48 +32,52 @@ Keep this section short. It states what is true now; the reasoning and the bugs 
 - **M2** `verification/` — compile check through the Angular compiler (`ngc`), optional supplied spec, characterization diff in a `node:vm` sandbox, one pure tiering function (`decideTier`): **MEDIUM / LOW / REJECTED**. Nine real, unmocked controls (4 negative asserting the failed check and its evidence, 3 positive, 2 false-accept regressions). CLI: `verify`.
 - **M2.5** `pipeline/` — `migrate <repo> <workspace>`: every codemod per file, output lifted into standalone exported `.ts` files with imports inside the scaffolded workspace, compiled in rounds so each file is judged on its own errors, each artifact tiered by the gate, JSON report.
 
-**First real numbers (2026-10-09, `migrate` against each pinned fixture, ADR-064).** "Matched" is what every earlier hit count in this project measured: a pattern recognized something. "Compiled" is files with at least one artifact the Angular compiler accepted. Never quote the first as if it were the second.
+**Numbers (2026-10-09, `migrate` on Angular 22.2.2, ADR-064/071/072).** "Matched" is what every earlier hit count in this project measured: a pattern recognized something. "Compiled" is files with at least one artifact the Angular compiler accepted. Never quote the first as if it were the second.
 
-| Fixture | AngularJS files in scope | Pattern matched | Compiled in workspace |
+| Repo | AngularJS files in scope | Pattern matched | Compiled in workspace |
 |---|---|---|---|
-| `angular-phonecat` | 14 (11 scripts, 3 templates) | 4 (28.6%) | 2 (14.3%) |
-| `CoreUI-AngularJS` | 21 (11 scripts, 10 templates) | 5 (23.8%) | 4 (19.0%) |
-| `blur-admin` | 213 (138 scripts, 75 templates) | 62 (29.1%) | 14 (6.6%) |
+| `angular-phonecat` (fixture) | 14 | 4 (28.6%) | 2 (14.3%) |
+| `CoreUI-AngularJS` (fixture) | 21 | 5 (23.8%) | 4 (19.0%) |
+| `blur-admin` (fixture) | 213 | 62 (29.1%) | 23 (10.8%) |
+| `angular-app/angular-app` @ `92c579a` (unseen) | 59 | 36 (61.0%) | 11 (18.6%) |
+| `gothinkster/angularjs-realworld-example-app` @ `08755ca` (unseen) | 28 | 11 (39.3%) | 0 (0%) |
 
 Emitted artifacts by type and tier (MEDIUM / LOW / REJECTED):
 
-| Fixture | controller | service | filter | directive | route |
+| Repo | controller | service | filter | directive | route |
 |---|---|---|---|---|---|
 | `angular-phonecat` | — | 0 / 1 / 0 | 1 / 0 / 0 | — | 0 / 0 / 1 |
-| `CoreUI-AngularJS` | 0 / 18 / 23 | — | — | — | — |
-| `blur-admin` | 0 / 12 / 12 | 0 / 1 / 0 | 1 / 0 / 4 | 0 / 0 / 3 | 0 / 0 / 2 |
+| `CoreUI-AngularJS` | 0 / 21 / 20 | — | — | — | — |
+| `blur-admin` | 0 / 18 / 6 | 0 / 1 / 0 | 1 / 3 / 1 | 0 / 0 / 3 | 0 / 0 / 2 |
+| `angular-app` | 0 / 11 / 7 | 0 / 1 / 8 | — | — | 0 / 0 / 2 |
+| `angularjs-realworld` | — | — | — | — | — |
 
-Characterization eligibility by artifact type: filters 2 of 2 that compiled were eligible and matched (4 more never compiled — an untyped DI parameter, `NG2003`, or the `angular` global); controllers, services, directives and routes 0 — no producer exists for them, so every one that compiles is LOW. There is no MEDIUM outside pure filters.
+Characterization eligibility by artifact type: filters — 2 eligible and matched (MEDIUM), 3 compiled but ineligible because they close over an injected dependency (LOW), 1 never compiled; controllers, services, directives, routes — 0 eligible, no producer exists and none has a real target yet (ADR-073). There is no MEDIUM outside pure filters, and for mechanical output MEDIUM is a weak claim: both sides derive from the same source text, so it shows the lift broke nothing, not that a rewrite is correct. It will mean more for Stage 3 output.
 
-Why things are rejected, most common first: a free AngularJS-era global (`angular`, `$`, a chart library — `TS2304`/`TS2592`); an untyped callback parameter (`TS7006`); routes naming components nobody migrated; component templates still written in AngularJS syntax (`ng-src`, unknown elements and pipes); pipes whose DI parameter has no injection token.
+LOW is not an accept. Every LOW controller, service and pipe that takes an AngularJS injectable lists it under `followUps` in the report: the file compiles, and nothing provides that dependency yet.
+
+Why things are rejected, most common first: a name declared in another file or by a third-party library (`brandPrimary`, `angular`, `$`, `Chart` — `TS2304`/`TS2592`); a `.factory` body returning an object from what is now a constructor (`TS2409`, `angular-app`); routes naming components nobody migrated; component templates still in AngularJS syntax (`ng-src`, `::` one-time bindings, unknown elements and pipes). None of these is mechanical; they are Stage 3's input.
 
 **Not built yet:** LLM-assisted fallback (M3), the web layer (M4), published fixture runs (M5).
 
 **Known, open:**
-- In `blur-admin`, 149 of 213 files match no pattern at all (103 scripts, 46 templates), and 27 of the 62 "matched" files are templates pattern #7 transformed that nothing compiled — a template is only compiled when a migrated component owns it, and only 2 do (both rejected). The same holds for the one transformed template in each of the other two fixtures.
-- `collect-call-site-args.ts` matches callees by name and nothing calls it (ADR-050). Filters are called from templates, which carry no literal arguments.
-- `nx build migration-core` can exit 0 having written nothing (ADR-055; seen again 2026-10-09). `npx tsc -b libs/migration-core/tsconfig.lib.json` is the build that can be trusted.
-- `npm audit --omit=dev`: 3 high, all one advisory in `braces` (via `fast-glob` → `micromatch`), no fix published. The glob patterns are this project's own constants, never read from a target repo, so the advisory's input is not attacker-controlled here; Node 24's built-in `fs.promises.glob` would remove the dependency outright. Dev-tooling advisories (`axios`, `proxy-addr`, `smol-toml`, … under `nx`/`@angular/cli`) are open too; Dependabot could not auto-fix `axios` or `brace-expansion` because of version conflicts.
-- Branch protection requires only the gitleaks check; `Lint, typecheck, unit tests` is not a required check yet, so a red PR is still mergeable.
+- A transformed template is compiled only when a migrated component owns it. In `blur-admin` 27 of the 62 matched files are templates nothing compiled; 15 in `angular-app`, 11 in `angularjs-realworld`.
+- `migrate` scopes by content, not directory: two third-party files under `angular-app`'s `client/vendor/` are counted in scope. Directory names are deliberately not used to exclude (ADR-018).
+- `collect-call-site-args.ts` matches callees by name and nothing calls it (ADR-050).
+- `nx build migration-core` can exit 0 having written nothing (ADR-055). `npx tsc -b libs/migration-core/tsconfig.lib.json` is the build that can be trusted. After `npm install`, `npx nx reset` clears a stale "workspace is out of sync" error.
 - No sandbox: the compiler and test runner run on the host, and `node:vm` (characterization) is not a security boundary. Only run `migrate` against code you trust.
+- `npm audit --omit=dev`: 3 high, one advisory in `braces` via `fast-glob`, no fix published; the glob patterns are this project's constants, not target-repo input. Node's built-in `fs.promises.glob` would remove the dependency. Dev-tooling advisories under `nx` remain (ADR-012).
+- No provider API keys exist in the dev environment or CI yet; M3's real-provider smoke tests need them.
 - `ng-morph` is named in the spec as an AST engine and has never been needed or installed.
-- The two previously-unseen repos the v1 definition of done requires have not been chosen.
 - Nx 23.3 and TypeScript 7 deliberately not adopted (ADR-066). Revisit Node 26 after it becomes Active LTS on 2026-10-28.
 
 ## What's next — prompt for the next session
 
-1. **Read `libs/migration-core/src/verification/` yourself, every line** (about 600 lines without specs). #23 and #24 merged without that read — a waiver of CLAUDE.md's rule for those two PRs (ADR-068), not the rule being met. Start with `run-verification-gate.ts` (`decideTier`), then `characterization/diff.ts` and `eligibility.ts`.
-2. **Raise the mechanical compiled rate before spending LLM calls.** The rejection list above is mostly mechanical: type untyped callback parameters `any`; give migrated classes typed DI tokens instead of `any`; emit a stub or skip for route components that were not migrated. Each is a change to an existing pattern's output, not an 11th pattern. Re-run `migrate` on all three fixtures after each and update the tables.
-3. **Characterization producers beyond filters** — a `.factory`/`.service` returning an object of pure functions is the next cheapest; controllers will stay LOW by design.
-4. **M3** (`docs/milestones/m3-llm-fallback.md`) once 2 stops moving the numbers. Check provider limits first (ADR-008). Its input is the REJECTED and NO_MATCH files in the `migrate` report; its output goes back through `decideTier`.
-5. Pick the two unseen repos; run `migrate` on them early rather than at M5.
+**M3 — LLM fallback + provider scheduler** (`docs/milestones/m3-llm-fallback.md`, which now states the concrete contract with what already exists). Nothing is owed before it: the gate has had its human read, CI runs the suite and requires it, the mechanical pipeline runs end to end, and the mechanical rejections that could be fixed mechanically have been.
 
-Every milestone ends in a PR, never a direct commit to `main`. Nothing is done until it has been run and its output checked.
+Start by reading the M3 milestone doc and running `migrate` once yourself to see a report. Then, before any code: check current provider limits (ADR-008), and ask the maintainer for provider keys — none exist in the environment.
+
+Every milestone ends in a PR, never a direct commit to `main`. Nothing is done until it has been run and its output checked. Any change under `verification/` needs the maintainer's line-by-line read before merge.
 
 ## Session log
 
@@ -85,3 +89,4 @@ One line per session, newest last. Detail belongs in `docs/decisions.md`.
 - **2026-09-22** — Pattern #7 merged; M2 first implementation on `worktree-m2-verification-gate`, not pushed (ADR-049–056).
 - **2026-10-09** — Adversarial review by execution: stages did not connect, gate false-accepted, controls were vacuous (ADR-057). Plan re-locked (ADR-058–061). M2 fix pass, CI checks job and real module boundaries, draft PR #23 green (ADR-062). M2.5 assembler built and run on all three fixtures; first compiled-in-workspace numbers (ADR-063–065). Pre-merge adversarial review with mutation testing hardened the gate and CI (ADR-067); merge of #22/#23/#24 left to the maintainer — the harness blocks an agent merging without review (ADR-068). This file cut from 124 KB to its current size.
 - **2026-10-09 (later)** — #23, #24, #22 merged by the maintainer; `main` CI green on all four jobs. Status table and next steps brought in line.
+- **2026-10-09 (wrap-up)** — Maintainer read `verification/` line by line (ADR-070). Angular CLI pin to 22.2.2 (ADR-069, #29); Dependabot #26/#27 merged, #25 closed as superseded. Assembler completions lifted `blur-admin` to 10.8% compiled (ADR-071). Two unseen repos run (ADR-072). `Lint, typecheck, unit tests` made a required check on `main`. Ready for M3.

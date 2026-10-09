@@ -1,6 +1,6 @@
 # AngularJS → Angular Migration Copilot
 
-**Status: mechanical pipeline works end to end; no LLM stage yet.** Stages 0 through 2 and Stage 4 are built and have been run against three real, pinned AngularJS repos: inventory, workspace scaffold, the 10 codemods, assembly into a real Angular workspace, and the verification gate. Stage 3 (LLM fallback) and the hosted demo don't exist yet. The numbers so far are low and reported as they are — on the messiest fixture, 6.6% of files produce something the Angular compiler accepts. Current status, the full tables, and what's next: [docs/PROGRESS.md](docs/PROGRESS.md). Per-milestone scope and definition of done: [docs/milestones](docs/milestones).
+**Status: mechanical pipeline works end to end; no LLM stage yet.** Stages 0 through 2 and Stage 4 are built and have been run against three real, pinned AngularJS repos: inventory, workspace scaffold, the 10 codemods, assembly into a real Angular workspace, and the verification gate. Stage 3 (LLM fallback) and the hosted demo don't exist yet. The numbers so far are low and reported as they are — across three fixtures and two previously-unseen repos, between 0% and 19% of files produce something the Angular compiler accepts. Current status, the full tables, and what's next: [docs/PROGRESS.md](docs/PROGRESS.md). Per-milestone scope and definition of done: [docs/milestones](docs/milestones).
 
 ## What this is
 
@@ -59,7 +59,7 @@ It runs the workspace's compiler on your machine with no sandbox, so only point 
 
 - **Every change is verified, not trusted — mechanical ones included.** Stage 4 compiles it with the Angular compiler and, where a function can be isolated, diffs its behaviour against the original. What can't be verified is labelled LOW, never quietly accepted.
 - **Honest numbers over flattering numbers.** "A pattern matched" and "the output compiles" are reported as two different numbers, per repo, including the worst one.
-- **The verification gate is held to a different standard.** It's the component the whole project's credibility rests on. Its controls are real (a scaffolded workspace, the real compiler) and are themselves tested by mutation: break the gate on purpose and the controls must fail. It was last reviewed adversarially by an AI agent at the maintainer's direction, not yet read line by line by a human — see [docs/decisions.md](docs/decisions.md) ADR-068 for exactly what that review did and didn't cover.
+- **The verification gate is held to a different standard.** It's the component the whole project's credibility rests on. Its controls are real (a scaffolded workspace, the real compiler) and are themselves tested by mutation: break the gate on purpose and the controls must fail. It has been attacked adversarially by an AI agent and then read line by line by the maintainer; any later change to it needs that human read again before it merges ([docs/decisions.md](docs/decisions.md) ADR-067, ADR-070).
 - **$0 to run, regardless of demo traffic.** The hosted demo replays pre-computed results against a fixed set of fixture repos; it never triggers a live LLM call from visitor traffic.
 
 ## Repo layout

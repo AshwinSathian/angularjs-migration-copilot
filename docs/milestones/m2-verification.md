@@ -1,6 +1,6 @@
 # M2 — Verification Gate
 
-**Status:** done — merged 2026-10-09; see `docs/PROGRESS.md`. Human line-by-line read still owed (ADR-068).
+**Status:** done — merged 2026-10-09; maintainer line-by-line read complete (ADR-070).
 **Estimate:** 1.5–2.5 weeks
 **Depends on:** M0.5 (doesn't strictly need M1, but in practice needs something to verify)
 
