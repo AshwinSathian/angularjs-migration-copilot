@@ -20,12 +20,17 @@ export default [
           depConstraints: [
             {
               sourceTag: 'scope:migration-core',
-              onlyDependOnLibsWithTags: ['scope:migration-core', 'scope:secrets-scan'],
+              onlyDependOnLibsWithTags: ['scope:migration-core', 'scope:secrets-scan', 'scope:provider-scheduler'],
               bannedExternalImports: ['@angular/*', '@nestjs/*', 'mongodb', 'mongoose'],
             },
             {
               sourceTag: 'scope:secrets-scan',
               onlyDependOnLibsWithTags: ['scope:secrets-scan'],
+              bannedExternalImports: ['@angular/*', '@nestjs/*', 'mongodb', 'mongoose'],
+            },
+            {
+              sourceTag: 'scope:provider-scheduler',
+              onlyDependOnLibsWithTags: ['scope:provider-scheduler'],
               bannedExternalImports: ['@angular/*', '@nestjs/*', 'mongodb', 'mongoose'],
             },
             {
