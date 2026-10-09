@@ -74,6 +74,13 @@ describe('checkEligibility', () => {
     ['Math.random', 'function f(x) { return Math.random() * x; }', /Math\.random/],
     ['Date.now', 'function f(x) { return Date.now() + x; }', /Date\.now/],
     ['an argument-less Date', 'function f(x) { return new Date().getTime() + x; }', /Date/],
+    ['Math through element access', 'function f(x) { return Math["random"]() * x; }', /Math/],
+    ['Math through an alias', 'function f(x) { var m = Math; return m.random() * x; }', /Math/],
+    ['Math through destructuring', 'function f(x) { const { random } = Math; return random() * x; }', /Math/],
+    ['Date through element access', 'function f(x) { return Date["now"]() + x; }', /Date/],
+    ['Date through an alias', 'function f(x) { var D = Date; return new D().getTime() + x; }', /Date/],
+    ['Date called as a function', 'function f(x) { return Date() + x; }', /Date/],
+    ['dynamic code via .constructor', 'function f(x) { return (function () {}).constructor("return 1")() + x; }', /constructor/],
     ['an async function', 'async function f(x) { return x; }', /async/],
   ])('rejects a function that depends on %s', (_label, source, reason) => {
     const result = checkEligibility(source);
@@ -86,7 +93,7 @@ describe('checkEligibility', () => {
       const scale = (n) => Math.round(n * rate);
       let total = 0;
       for (const item of items) total += scale(item.price);
-      return { total, when: new Date(0), label: String(total).length };
+      return { total, when: new Date(0), parsed: Date.parse('2020-01-01'), utc: Date.UTC(2020, 0), label: String(total).length };
     }`;
     expect(checkEligibility(source)).toEqual({ eligible: true });
   });

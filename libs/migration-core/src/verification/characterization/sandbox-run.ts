@@ -1,17 +1,17 @@
 import vm from 'node:vm';
 import { ts } from 'ts-morph';
 import type { SandboxOutcome } from '../types.js';
+import { safeDataProperty } from './diff.js';
 
 const DEFAULT_TIMEOUT_MS = 1000;
 
 /** Errors that mean "this source cannot run standalone here", not "the function threw". */
 const ENVIRONMENT_ERROR_NAMES = new Set(['ReferenceError', 'SyntaxError']);
 
+/** A thrown value is as untrusted as a returned one: read it as data, never through a getter or a Proxy trap. */
 function field(error: unknown, key: string): string | undefined {
-  if (typeof error === 'object' && error !== null && key in error) {
-    return String((error as Record<string, unknown>)[key]);
-  }
-  return undefined;
+  const value = safeDataProperty(error, key);
+  return typeof value === 'string' ? value : undefined;
 }
 
 /**
@@ -63,7 +63,7 @@ export function runInSandbox(
     return { type: 'return', value };
   } catch (error) {
     const name = field(error, 'name') ?? 'non-Error';
-    const message = field(error, 'message') ?? String(error);
+    const message = field(error, 'message') ?? (typeof error === 'object' ? '[non-Error value thrown]' : String(error));
     if (ENVIRONMENT_ERROR_NAMES.has(name) || field(error, 'code') === 'ERR_SCRIPT_EXECUTION_TIMEOUT') {
       return { type: 'unrunnable', message: `${name}: ${message}` };
     }

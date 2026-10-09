@@ -1,5 +1,8 @@
 name: CI
 
+# Third-party actions are pinned to a commit, not a tag: a moved tag would run
+# new code with this repo's token.
+
 on:
   push:
     branches: [main]
@@ -13,10 +16,10 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -36,16 +39,24 @@ jobs:
     outputs:
       verification: ${{ steps.filter.outputs.verification }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3
         id: filter
         with:
           filters: |
             verification:
               - 'libs/migration-core/src/verification/**'
               - 'libs/migration-core/verification/**'
+              # Everything the gate's behaviour depends on, not just its own
+              # directory: the subprocess runner and scaffolder it calls, the
+              # pinned toolchain, and this workflow.
+              - 'libs/migration-core/src/scaffold/**'
+              - 'libs/migration-core/vitest.integration.config.mts'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/ci.yml'
 
   # Permanently enforces the three planted negative-control fixtures
   # (libs/migration-core/verification/__fixtures__/negative-controls/) per
@@ -61,8 +72,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
       - run: npm ci
@@ -82,8 +93,8 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
           cache: npm

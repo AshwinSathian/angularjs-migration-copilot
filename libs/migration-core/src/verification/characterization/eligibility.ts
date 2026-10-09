@@ -63,14 +63,8 @@ function impurityReason(fn: Node): string | undefined {
   }
   for (const access of fn.getDescendantsOfKind(SyntaxKind.PropertyAccessExpression)) {
     if (NON_DETERMINISTIC_MEMBERS.has(access.getText())) return `calls ${access.getText()}, which is non-deterministic`;
-  }
-  for (const node of [
-    ...fn.getDescendantsOfKind(SyntaxKind.NewExpression),
-    ...fn.getDescendantsOfKind(SyntaxKind.CallExpression),
-  ]) {
-    if (node.getExpression().getText() === 'Date' && node.getArguments().length === 0) {
-      return 'reads the current time via an argument-less Date';
-    }
+    // `(function () {}).constructor('…')` is `Function` by another name: code no static check here can see.
+    if (access.getName() === 'constructor') return 'reaches a constructor through `.constructor` — dynamic code cannot be checked';
   }
   for (const identifier of fn.getDescendantsOfKind(SyntaxKind.Identifier)) {
     if (isNameOnlyPosition(identifier)) continue;
@@ -80,8 +74,23 @@ function impurityReason(fn: Node): string | undefined {
     const declaredInside = (symbol?.getDeclarations() ?? []).some(
       (d) => d === fn || d.getFirstAncestor((a) => a === fn) !== undefined
     );
-    if (declaredInside || PURE_GLOBALS.has(identifier.getText())) continue;
-    return `references ${identifier.getText()}, which is neither one of its own parameters/locals nor a pure built-in (§6.5 criteria (a)/(c))`;
+    if (declaredInside) continue;
+    const name = identifier.getText();
+    // `Math` and `Date` hold the two impure built-ins on the allowlist, so they are accepted only in
+    // forms that name the member statically: no alias (`var m = Math`), destructuring, or `Math['random']`.
+    if (name === 'Math' || name === 'Date') {
+      const isMember = Node.isPropertyAccessExpression(parent) && parent.getExpression() === identifier;
+      const isDatedConstruction =
+        name === 'Date' && Node.isNewExpression(parent) && parent.getExpression() === identifier && parent.getArguments().length > 0;
+      const allowed =
+        isDatedConstruction || (isMember && (name === 'Math' || ['UTC', 'parse'].includes(parent.getName())));
+      if (allowed) continue;
+      return name === 'Date' && (Node.isNewExpression(parent) || Node.isCallExpression(parent))
+        ? 'reads the current time via an argument-less Date'
+        : `uses ${name} other than as a statically named pure member — cannot rule out ${name === 'Math' ? 'Math.random' : 'Date.now'}`;
+    }
+    if (PURE_GLOBALS.has(name)) continue;
+    return `references ${name}, which is neither one of its own parameters/locals nor a pure built-in (§6.5 criteria (a)/(c))`;
   }
   return undefined;
 }

@@ -75,6 +75,11 @@ describe('outcomesMatch', () => {
     ['promises', 'Promise.resolve(1)'],
     ['class instances', 'new (class Money { constructor() { this.v = 1; } })()'],
     ['symbols', 'Symbol("s")'],
+    ['objects with symbol-keyed properties', '(() => { const o = {}; o[Symbol.for("k")] = 1; return o; })()'],
+    ['objects with non-enumerable properties', '(() => { const o = {}; Object.defineProperty(o, "h", { value: 1 }); return o; })()'],
+    ['objects with getters', '({ get x() { return 1; } })'],
+    ['arrays with extra properties', '(() => { const a = [1]; a.extra = 2; return a; })()'],
+    ['proxies', 'new Proxy({}, {})'],
     ['cyclic structures', '(() => { const o = {}; o.self = o; return o; })()'],
   ])('never matches %s, even against an identical run — no faithful structural form', (_label, source) => {
     expect(outcomesMatch(ret(source), ret(source))).toBe(false);
@@ -89,5 +94,22 @@ describe('outcomesMatch', () => {
     expect(
       outcomesMatch({ type: 'throw', name: 'TypeError', message: 'x' }, { type: 'throw', name: 'RangeError', message: 'x' })
     ).toBe(false);
+  });
+
+  // ADR-067: canonicalization runs in the host, outside the sandbox timeout.
+  it('never runs code a returned value carries — a looping getter, iterator, toString or Proxy trap cannot hang the gate', () => {
+    const hostile = [
+      '({ get x() { while (true) {} } })',
+      '(() => { const a = [1]; a[Symbol.iterator] = function () { while (true) {} }; return a; })()',
+      '(() => { const r = /a/; r.toString = function () { while (true) {} }; return r; })()',
+      '(() => { const m = new Map(); m[Symbol.iterator] = function () { while (true) {} }; return m; })()',
+      'new Proxy({}, { ownKeys() { while (true) {} }, getPrototypeOf() { while (true) {} } })',
+      '(() => { const d = new Date(0); d.getTime = function () { while (true) {} }; return d; })()',
+    ];
+    for (const source of hostile) expect(typeof outcomesMatch(ret(source), ret(source))).toBe('boolean');
+  });
+
+  it('a Date carrying extra properties is not silently equal to a plain one', () => {
+    expect(outcomesMatch(ret('new Date(5)'), ret('(() => { const d = new Date(5); d.getTime = () => 99; return d; })()'))).toBe(false);
   });
 });

@@ -56,6 +56,8 @@ export function runCharacterization(target: CharacterizationTarget): Characteriz
     const originalOutcome = runInSandbox(target.originalFunctionSource, input);
     const original = comparable('original', originalOutcome);
     if ('reason' in original) return { eligible: false, reason: original.reason };
+    // Backstop only: eligibility already rejects every non-deterministic source it can see, so no test can
+    // reach this today (a mutation removing it survives the suite). It exists for the day eligibility loosens.
     const rerun = comparable('original', runInSandbox(target.originalFunctionSource, input));
     if (!('key' in rerun) || rerun.key !== original.key) {
       return { eligible: false, reason: 'original function is non-deterministic — two runs on the same input disagree' };
