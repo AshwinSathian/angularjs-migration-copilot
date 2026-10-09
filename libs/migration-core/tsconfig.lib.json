@@ -12,6 +12,9 @@
   "references": [
     {
       "path": "../secrets-scan/tsconfig.lib.json"
+    },
+    {
+      "path": "../provider-scheduler/tsconfig.lib.json"
     }
   ],
   "exclude": [
