@@ -8,6 +8,9 @@
     },
     {
       "path": "./libs/secrets-scan"
+    },
+    {
+      "path": "./libs/provider-scheduler"
     }
   ],
   "compilerOptions": {}

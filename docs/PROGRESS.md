@@ -13,7 +13,7 @@ Update this file at the end of every session — rewrite the status table and "W
 | M1 — Deterministic codemods | done (10/10 patterns) | [#5](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/5), [#6](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/6), [#8](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/8), [#10](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/10), [#11](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/11), [#12](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/12), [#13](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/13), [#15](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/15), [#16](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/16), [#17](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/17), [#18](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/18), [#19](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/19), [#21](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/21) |
 | M2 — Verification gate | done — maintainer has read `verification/` line by line (ADR-070) | [#23](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/23) |
 | M2.5 — Pipeline assembler | done — run on three fixtures and two unseen repos | [#24](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/24) |
-| M3 — LLM fallback + scheduler | not started | — |
+| M3 — LLM fallback + scheduler | in progress — scheduler library built; Stage 3 not wired | — |
 | M4 — Web layer | not started | — |
 | M5 — Fixtures, licensing, published report | not started | — |
 
@@ -58,7 +58,9 @@ LOW is not an accept. Every LOW controller, service and pipe that takes an Angul
 
 Why things are rejected, most common first: a name declared in another file or by a third-party library (`brandPrimary`, `angular`, `$`, `Chart` — `TS2304`/`TS2592`); a `.factory` body returning an object from what is now a constructor (`TS2409`, `angular-app`); routes naming components nobody migrated; component templates still in AngularJS syntax (`ng-src`, `::` one-time bindings, unknown elements and pipes). None of these is mechanical; they are Stage 3's input.
 
-**Not built yet:** LLM-assisted fallback (M3), the web layer (M4), published fixture runs (M5).
+- **M3 (part)** `libs/provider-scheduler` — provider interface, scripted mock, `fetch` adapters for Groq / Gemini / OpenRouter, file-backed scheduler with per-provider token buckets, fallback on 429, `resumeAt` when all are exhausted. Unit-tested against the mock only; no real provider has been called. Nothing in `migrate` uses it yet.
+
+**Not built yet:** Stage 3 itself (patch generation, wiring into `migrate`), the web layer (M4), published fixture runs (M5).
 
 **Known, open:**
 - A transformed template is compiled only when a migrated component owns it. In `blur-admin` 27 of the 62 matched files are templates nothing compiled; 15 in `angular-app`, 11 in `angularjs-realworld`.
@@ -67,7 +69,7 @@ Why things are rejected, most common first: a name declared in another file or b
 - `nx build migration-core` can exit 0 having written nothing (ADR-055). `npx tsc -b libs/migration-core/tsconfig.lib.json` is the build that can be trusted. After `npm install`, `npx nx reset` clears a stale "workspace is out of sync" error.
 - No sandbox: the compiler and test runner run on the host, and `node:vm` (characterization) is not a security boundary. Only run `migrate` against code you trust.
 - `npm audit --omit=dev`: 3 high, one advisory in `braces` via `fast-glob`, no fix published; the glob patterns are this project's constants, not target-repo input. Node's built-in `fs.promises.glob` would remove the dependency. Dev-tooling advisories under `nx` remain (ADR-012).
-- No provider API keys exist in the dev environment or CI yet; M3's real-provider smoke tests need them.
+- No provider API keys exist in the dev environment or CI yet; M3's real-provider smoke tests need them. Free-tier limits could not be verified from the public pages (ADR-074): Groq's Free tab and Gemini's numbers need the maintainer's own console.
 - `ng-morph` is named in the spec as an AST engine and has never been needed or installed.
 - Nx 23.3 and TypeScript 7 deliberately not adopted (ADR-066). Revisit Node 26 after it becomes Active LTS on 2026-10-28.
 
@@ -90,3 +92,4 @@ One line per session, newest last. Detail belongs in `docs/decisions.md`.
 - **2026-10-09** — Adversarial review by execution: stages did not connect, gate false-accepted, controls were vacuous (ADR-057). Plan re-locked (ADR-058–061). M2 fix pass, CI checks job and real module boundaries, draft PR #23 green (ADR-062). M2.5 assembler built and run on all three fixtures; first compiled-in-workspace numbers (ADR-063–065). Pre-merge adversarial review with mutation testing hardened the gate and CI (ADR-067); merge of #22/#23/#24 left to the maintainer — the harness blocks an agent merging without review (ADR-068). This file cut from 124 KB to its current size.
 - **2026-10-09 (later)** — #23, #24, #22 merged by the maintainer; `main` CI green on all four jobs. Status table and next steps brought in line.
 - **2026-10-09 (wrap-up)** — Maintainer read `verification/` line by line (ADR-070). Angular CLI pin to 22.2.2 (ADR-069, #29); Dependabot #26/#27 merged, #25 closed as superseded. Assembler completions lifted `blur-admin` to 10.8% compiled (ADR-071). Two unseen repos run (ADR-072). `Lint, typecheck, unit tests` made a required check on `main`. Ready for M3.
+- **2026-10-09 (M3 start)** — Provider limits checked (ADR-074). `libs/provider-scheduler` built and unit-tested (ADR-075). Stage 3 next.
