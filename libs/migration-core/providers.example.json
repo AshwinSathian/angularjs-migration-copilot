@@ -1,0 +1,18 @@
+{
+  "groq": {
+    "model": "FILL-IN: a chat model from console.groq.com/docs/rate-limits",
+    "limits": { "rpm": 1, "tpm": 1, "rpd": 1, "tpd": 1 }
+  },
+  "gemini-flash-lite": {
+    "model": "FILL-IN: the current Flash-Lite model id",
+    "limits": { "rpm": 1, "tpm": 1, "rpd": 1, "dailyResetTimeZone": "America/Los_Angeles" }
+  },
+  "gemini-flash": {
+    "model": "FILL-IN: the current Flash model id",
+    "limits": { "rpm": 1, "tpm": 1, "rpd": 1, "dailyResetTimeZone": "America/Los_Angeles" }
+  },
+  "openrouter": {
+    "model": "FILL-IN: a model id ending in :free",
+    "limits": { "rpm": 1, "rpd": 1 }
+  }
+}

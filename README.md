@@ -53,7 +53,20 @@ node $CLI migrate ./path/to/an/angularjs/repo /abs/path/to/new-workspace --repor
 - **LOW** — compiles, behaviour not verified. Needs a human.
 - **REJECTED** — failed to compile or failed the characterization diff, with the compiler's own diagnostics in the report.
 
-It runs the workspace's compiler on your machine with no sandbox, so only point it at code you trust. Anything the codemods can't handle is left for Stage 3, which isn't built.
+Add `--provider` and the files the codemods could not migrate go to an LLM. Its answer is a structured patch, written into the same workspace, compiled by the same compiler and tiered by the same rule. The report keeps the two apart: every artifact is marked `mechanical` or `llm-assisted`, and the counts are never summed.
+
+```bash
+node $CLI migrate ./repo /abs/path/to/new-workspace --provider mock --report report.json
+GROQ_API_KEY=... GEMINI_API_KEY=... node $CLI migrate ./repo /abs/path/to/new-workspace \
+  --provider real --providers-config my-providers.json --report report.json
+```
+
+- `--provider mock` makes no network call. Its patches are stand-ins that exercise each path, so its numbers describe the plumbing, not a migration.
+- `--provider real` needs `--providers-config`: the model and rate limits for each provider, which you fill in from your own provider console ([providers.example.json](libs/migration-core/providers.example.json)). Nothing is assumed, because free-tier limits change. A provider with no key, model or limits is skipped, and the run says so.
+- Everything sent to a provider is passed through secret redaction first.
+- When every provider is out of budget the run exits with code 75 and tells you when to run the same command again. Finished answers are kept, so nothing is sent twice. `--wait` waits in-process instead.
+
+It runs the workspace's compiler on your machine with no sandbox, so only point it at code you trust.
 
 ## Design principles this project holds itself to
 
