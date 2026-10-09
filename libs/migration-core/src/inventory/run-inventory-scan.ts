@@ -7,7 +7,7 @@ import { scanRoutes } from './scan-routes.js';
 import { scanWatchUsages } from './scan-watches.js';
 import type { InventoryReport } from './types.js';
 
-const DEFAULT_IGNORE = [
+export const DEFAULT_IGNORE = [
   '**/node_modules/**',
   '**/bower_components/**',
   '**/dist/**',
@@ -33,7 +33,7 @@ const DEFAULT_IGNORE = [
  */
 const ANGULAR_LIBRARY_BANNER = /@license AngularJS v/;
 
-function isVendoredAngularSource(content: string): boolean {
+export function isVendoredAngularSource(content: string): boolean {
   // The banner is always in the first few lines of a real Angular release
   // file; checking only a small prefix avoids paying for a regex scan
   // across a multi-thousand-line framework file just to reject it.

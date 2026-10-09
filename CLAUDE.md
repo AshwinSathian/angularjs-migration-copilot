@@ -15,7 +15,9 @@ rewrite past entries, even superseded ones.
 
 **Before you finish a session:** update `docs/PROGRESS.md` — rewrite the
 status table and "Where things stand" section to match reality, and append
-one line to the session log. A session that ships real work but leaves
+one line to the session log. Keep it short enough to read in one pass:
+current state only, one line per session; narrative and bug history go in
+`docs/decisions.md`, one line per ADR. A session that ships real work but leaves
 PROGRESS.md describing the previous state has left the next session to
 re-discover what you already know.
 
@@ -26,21 +28,31 @@ re-discover what you already know.
   signal the task belongs in `apps/api` or `apps/web` instead, not a reason
   to add the dependency.
 - `migration-core` never imports from `apps/api` or `apps/web`. The reverse
-  is fine. This is enforced by Nx lint rules and by a CI step that builds
-  `migration-core` standalone and diffs its dependency tree against an
-  allowlist — a stray import gets caught by lint, but a framework dependency
-  that sneaks in through a bundler/executor wouldn't, which is why both
-  checks exist.
+  is fine. Enforced three ways, because each catches something the others
+  miss: `@nx/enforce-module-boundaries` tags, a `no-restricted-imports`
+  rule on every project under `libs/` (the Nx rule cannot see a framework
+  package that is not installed yet), and a CI step that fails if
+  `migration-core`'s production dependency tree contains a framework
+  package. If you add a project under `libs/`, spread `frameworkFreeLib`
+  from the root `eslint.config.mjs` into its config.
 
 ## Verification is the product
 
 - Never mark a Stage 4 (verification gate) task complete because "the code
-  looks correct." It's complete only when `tsc --noEmit` and the target
-  repo's actual test suite have been run and their exit codes checked —
-  not inferred from reading the generated code. Concretely: the gate isn't
-  done until it correctly returns REJECTED on all three planted fixtures in
-  `libs/migration-core/verification/__fixtures__/negative-controls/`.
-- Any change to `libs/migration-core/verification/` requires a human review
+  looks correct." It's complete only when the Angular compiler (`ngc`, not
+  bare `tsc` — `tsc` ignores decorators, DI tokens and templates) and any
+  supplied spec have been run and their exit codes checked — not inferred
+  from reading the generated code. Concretely: the gate isn't done until the
+  real controls in
+  `libs/migration-core/verification/__fixtures__/negative-controls/` pass —
+  each negative control REJECTED *by the named check with the named
+  evidence*, and the positive controls reaching LOW and MEDIUM. A control
+  that asserts only the tier proves nothing: a gate that rejects everything
+  passes it.
+- Tiers are MEDIUM / LOW / REJECTED. HIGH is not reported in v1. LOW means
+  compiled but behaviour unverified; it is never an accept.
+- Any change to `libs/migration-core/verification/` or
+  `libs/migration-core/src/verification/` requires a human review
   before merge, regardless of how confident the CI run looks. This is the
   one component this entire project's credibility rests on — see
   [docs/product-spec.md §6.5](docs/product-spec.md). An agent that makes a
@@ -63,6 +75,10 @@ re-discover what you already know.
 
 ## Reporting has to stay honest
 
+- "Matched" (a codemod pattern recognized something) and "compiled" (the
+  `migrate` pipeline emitted a file the Angular compiler accepted) are
+  different numbers. Always say which one a figure is; never present a
+  match count as a migration rate.
 - Never report a mechanical-hit-rate or characterization-eligibility number
   averaged across only the fixture repos that make the number look good. All
   three fixture repos get reported, including the messiest one

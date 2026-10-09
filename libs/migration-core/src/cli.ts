@@ -19,6 +19,7 @@ import { runIngest } from './ingest/index.js';
 import { runInventoryScan } from './inventory/index.js';
 import { scaffoldTargetWorkspace, verifyWorkspaceBuilds } from './scaffold/index.js';
 import { runVerificationGate } from './verification/index.js';
+import { runPipeline } from './pipeline/index.js';
 
 const CODEMODS: Record<string, (sourceText: string) => CodemodResult> = {
   'array-di-to-constructor': transformArrayStyleDiToConstructor,
@@ -175,6 +176,29 @@ program
       if (result.tier === 'REJECTED') process.exitCode = 1;
     }
   );
+
+program
+  .command('migrate')
+  .description(
+    'Stages 2+4 over a whole repo: apply every codemod, emit standalone Angular files into a scaffolded workspace, compile them, and tier each one MEDIUM / LOW / REJECTED. Never writes to the source repo; replaces src/app/migrated in the workspace.'
+  )
+  .argument('<repoPath>', 'path to the AngularJS repo')
+  .argument('<workspaceDir>', 'an M0.5-scaffolded Angular workspace directory (see the scaffold command)')
+  .option('-r, --report <file>', 'write the full JSON report here instead of stdout')
+  .action(async (repoPath: string, workspaceDir: string, options: { report?: string }) => {
+    const report = await runPipeline({ repoDir: resolve(repoPath), workspaceDir: resolve(workspaceDir) });
+    const json = JSON.stringify(report, null, 2);
+    if (options.report) await writeFile(resolve(options.report), json, 'utf8');
+    else console.log(json);
+
+    const { sourceFiles, mechanical, byArtifactType } = report;
+    console.error(`${sourceFiles.inScope} AngularJS files in scope (${sourceFiles.scripts} scripts, ${sourceFiles.templates} templates)`);
+    console.error(`pattern matched: ${mechanical.matched} (${(mechanical.matchRate * 100).toFixed(1)}%)`);
+    console.error(`compiled in workspace: ${mechanical.compiled} (${(mechanical.compiledRate * 100).toFixed(1)}%)`);
+    for (const [type, counts] of Object.entries(byArtifactType)) {
+      console.error(`  ${type}: ${counts.total} emitted — MEDIUM ${counts.medium}, LOW ${counts.low}, REJECTED ${counts.rejected}`);
+    }
+  });
 
 program.parseAsync(process.argv).catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : error);

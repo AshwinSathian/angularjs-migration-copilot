@@ -1,7 +1,9 @@
 import type { ParameterType } from '../types.js';
 
 const BOUNDARY_SETS: Record<ParameterType, readonly unknown[]> = {
-  string: ['', 'x'],
+  // The last entry mixes markup, case, digits, whitespace and punctuation: 'x' alone
+  // leaves most string transforms (strip, trim, case, split) with nothing to do.
+  string: ['', 'x', ' <b>Hello</b>, World 42! '],
   number: [0, 1, -1],
   boolean: [true, false],
   array: [[], [1], null],
