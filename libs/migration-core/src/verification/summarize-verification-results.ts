@@ -2,8 +2,8 @@ import type { ArtifactType, VerificationResult } from './types.js';
 
 interface TierCounts {
   readonly total: number;
-  readonly high: number;
   readonly medium: number;
+  readonly low: number;
   readonly rejected: number;
 }
 
@@ -20,15 +20,15 @@ export function summarizeByArtifactType(
   results: readonly VerificationResult[]
 ): Record<ArtifactType, TierCounts> {
   const summary = Object.fromEntries(
-    ARTIFACT_TYPES.map((type) => [type, { total: 0, high: 0, medium: 0, rejected: 0 }])
+    ARTIFACT_TYPES.map((type) => [type, { total: 0, medium: 0, low: 0, rejected: 0 }])
   ) as Record<ArtifactType, TierCounts>;
 
   for (const result of results) {
     const bucket = summary[result.artifactType];
     summary[result.artifactType] = {
       total: bucket.total + 1,
-      high: bucket.high + (result.tier === 'HIGH' ? 1 : 0),
       medium: bucket.medium + (result.tier === 'MEDIUM' ? 1 : 0),
+      low: bucket.low + (result.tier === 'LOW' ? 1 : 0),
       rejected: bucket.rejected + (result.tier === 'REJECTED' ? 1 : 0),
     };
   }

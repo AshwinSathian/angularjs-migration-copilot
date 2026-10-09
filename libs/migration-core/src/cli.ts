@@ -153,7 +153,7 @@ program
 program
   .command('verify')
   .description(
-    'Stage 4: run the compile + existing-test-suite checks against a migrated file already placed in a scaffolded workspace. Characterization testing (no prior coverage) is library-only for now — no CLI producer of a CharacterizationTarget exists yet.'
+    'Stage 4: compile a scaffolded workspace with the Angular compiler and, if given, run one spec. Prints MEDIUM, LOW, or REJECTED; without a characterization target (library-only) the best outcome is LOW.'
   )
   .argument('<workspaceDir>', 'an M0.5-scaffolded Angular workspace directory')
   .option('-t, --artifact-type <type>', 'controller | service | filter | directive', 'service')

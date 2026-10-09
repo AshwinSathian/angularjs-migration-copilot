@@ -1,105 +1,164 @@
 /**
- * Real, unmocked: scaffolds one real Angular workspace and actually runs
- * `tsc`/`ng test` against it for fixtures #1 and #2. This is the
- * milestone's own definition of done (m2-verification.md) — "the code
- * looks correct" is explicitly not sufficient. Deliberately excluded
- * from the default fast `vitest` suite (see vitest.config.mts's
- * `*.integration.spec.ts` exclude) — slow (a real `ng new`/npm install).
- *
- * Run explicitly via `vitest.integration.config.mts`, a separate config
- * dedicated to this file: Vitest's `exclude` applies even to a file named
- * explicitly on the CLI, so the same config can't both keep the default
- * suite fast and make this one file explicitly runnable — see that
- * config's own docstring. Intended to run via its own CI job
- * (`verification-negative-controls`, .github/workflows/ci.yml, not yet
- * wired up) gated to changes under the verification module, per
- * CLAUDE.md's requirement that this fixture directory runs in CI on every
- * such change, permanently.
+ * Real, unmocked: scaffolds one Angular workspace and runs the real
+ * Angular compiler and test runner against it. See README.md for what
+ * each control proves. Excluded from the default fast suite; run via
+ * `vitest.integration.config.mts` and the `verification-negative-controls`
+ * CI job.
  */
-import { readFile, mkdir, mkdtemp, rm, cp } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import ts from 'typescript';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { scaffoldTargetWorkspace } from '../../../src/scaffold/index.js';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { runCommand, scaffoldTargetWorkspace } from '../../../src/scaffold/index.js';
 import { runVerificationGate } from '../../../src/verification/run-verification-gate.js';
+import type { CharacterizationTarget } from '../../../src/verification/types.js';
 
-const FIXTURES_DIR = join(import.meta.dirname);
+const FIXTURES_DIR = import.meta.dirname;
+/** Strips the fixture's leading `// ...` comment line, leaving a bare function expression. */
+const functionSource = async (relativePath: string) =>
+  (await readFile(join(FIXTURES_DIR, relativePath), 'utf8')).replace(/^\/\/.*\n/, '').trim();
 
-describe('verification gate — negative controls', () => {
+describe('verification gate — real controls', () => {
   let workspaceDir: string;
+  let plantedDir: string;
+
+  const plant = async (...fixturePaths: string[]) => {
+    await mkdir(plantedDir, { recursive: true });
+    for (const path of fixturePaths) {
+      await cp(join(FIXTURES_DIR, path), join(plantedDir, path.split('/').pop() as string));
+    }
+  };
 
   beforeAll(async () => {
-    const parent = await mkdtemp(join(tmpdir(), 'm2-negative-controls-'));
+    const parent = await mkdtemp(join(tmpdir(), 'm2-controls-'));
     workspaceDir = join(parent, 'workspace');
-    const result = await scaffoldTargetWorkspace({ outputDir: workspaceDir, appName: 'm2negctrl' });
+    plantedDir = join(workspaceDir, 'src/app/planted');
+    const result = await scaffoldTargetWorkspace({ outputDir: workspaceDir, appName: 'm2controls' });
     if (!result.success) throw new Error(`fixture setup: scaffold failed: ${result.stderr}`);
   }, 300_000);
+
+  afterEach(async () => {
+    await rm(plantedDir, { recursive: true, force: true });
+  });
 
   afterAll(async () => {
     if (workspaceDir) await rm(join(workspaceDir, '..'), { recursive: true, force: true });
   });
 
-  it('#1 — a genuine tsc compile error is REJECTED', async () => {
-    const targetDir = join(workspaceDir, 'src/app/negative-control-01');
-    await mkdir(targetDir, { recursive: true });
-    await cp(join(FIXTURES_DIR, '01-compile-error/broken.ts'), join(targetDir, 'broken.ts'));
+  const matchingTarget = async (): Promise<CharacterizationTarget> => ({
+    artifactType: 'service',
+    originalFunctionSource: await functionSource('03-characterization-mismatch/original.js'),
+    migratedFunctionSource: 'function priceWithTax(price: number, taxRate: number): number { return price * (1 + taxRate); }',
+    parameterNames: ['price', 'taxRate'],
+    parameterTypes: ['number', 'number'],
+    callSiteArgLiterals: [[100, 0.2], [50, 0.1]],
+  });
 
-    const result = await runVerificationGate({ workspaceDir, artifactType: 'service' });
+  describe('positive controls', () => {
+    it('an untouched workspace compiles: LOW, nothing to verify behaviour with', async () => {
+      const result = await runVerificationGate({ workspaceDir, artifactType: 'service' });
+      expect(result).toMatchObject({ tier: 'LOW', reason: 'no characterization target' });
+    }, 120_000);
 
-    expect(result.tier).toBe('REJECTED');
-    await rm(targetDir, { recursive: true, force: true });
-  }, 120_000);
+    it('compiles and characterization matches: MEDIUM', async () => {
+      const result = await runVerificationGate({ workspaceDir, artifactType: 'service', characterization: await matchingTarget() });
+      expect(result.tier).toBe('MEDIUM');
+      if (result.tier === 'MEDIUM') expect(result.characterization.casesRun).toBeGreaterThanOrEqual(2);
+    }, 120_000);
 
-  it('#2 — a test written to fail is REJECTED', async () => {
-    const targetDir = join(workspaceDir, 'src/app/negative-control-02');
-    await mkdir(targetDir, { recursive: true });
-    await cp(join(FIXTURES_DIR, '02-failing-test/module.ts'), join(targetDir, 'module.ts'));
-    await cp(join(FIXTURES_DIR, '02-failing-test/module.spec.ts'), join(targetDir, 'module.spec.ts'));
+    it('a passing supplied spec really ran, and does not raise the tier', async () => {
+      const result = await runVerificationGate({ workspaceDir, artifactType: 'service', migratedSpecPath: 'src/app/app.spec.ts' });
+      expect(result.tier).toBe('LOW');
+      expect(result.testLog).toMatch(/\d+ passed/);
+    }, 120_000);
+  });
 
-    const result = await runVerificationGate({
-      workspaceDir,
-      artifactType: 'service',
-      migratedSpecPath: 'src/app/negative-control-02/module.spec.ts',
-    });
+  describe('negative controls', () => {
+    it('#1 — a genuine compile error is REJECTED by the compile check, naming the file and TS2322', async () => {
+      await plant('01-compile-error/broken.ts');
 
-    expect(result.tier).toBe('REJECTED');
-    await rm(targetDir, { recursive: true, force: true });
-  }, 120_000);
+      const result = await runVerificationGate({ workspaceDir, artifactType: 'service', characterization: await matchingTarget() });
 
-  it('#3 — an engineered characterization mismatch is REJECTED', async () => {
-    const originalSource = await readFile(join(FIXTURES_DIR, '03-characterization-mismatch/original.js'), 'utf8');
-    const migratedSource = await readFile(join(FIXTURES_DIR, '03-characterization-mismatch/migrated.ts'), 'utf8');
+      expect(result).toMatchObject({ tier: 'REJECTED', failedCheck: 'compile' });
+      expect(result.compileLog).toMatch(/planted\/broken\.ts/);
+      expect(result.compileLog).toMatch(/TS2322/);
+    }, 120_000);
 
-    // Strip the fixture's leading `// ...` comment line, leaving a bare
-    // function expression usable as `runCharacterization`'s function source.
-    const extractFunction = (source: string) => source.replace(/^\/\/.*\n/, '').trim();
+    it('#2 — a test written to fail is REJECTED by the test check, with the assertion in the log', async () => {
+      await plant('02-failing-test/module.ts', '02-failing-test/module.spec.ts');
 
-    // `runInSandbox` (sandbox-run.ts) runs function source through plain
-    // Node `vm.Script`, never through `tsc` — it needs executable JS, not
-    // TypeScript. `original.js` already is JS; `migrated.ts` deliberately
-    // isn't (it's the "migrated" side of a real characterization target),
-    // so its type annotations are stripped via the TypeScript compiler's
-    // own transpiler rather than a hand-rolled regex.
-    const stripTypes = (source: string) =>
-      ts
-        .transpileModule(source, { compilerOptions: { module: ts.ModuleKind.None, target: ts.ScriptTarget.ES2020 } })
-        .outputText.replace(/^"use strict";\s*/, '')
-        .trim();
-
-    const result = await runVerificationGate({
-      workspaceDir,
-      artifactType: 'service',
-      characterization: {
+      const result = await runVerificationGate({
+        workspaceDir,
         artifactType: 'service',
-        originalFunctionSource: extractFunction(originalSource),
-        migratedFunctionSource: stripTypes(extractFunction(migratedSource)),
-        parameterNames: ['price', 'taxRate'],
-        parameterTypes: ['number', 'number'],
-        callSiteArgLiterals: [[100, 0.2], [50, 0.1]],
-      },
-    });
+        migratedSpecPath: 'src/app/planted/module.spec.ts',
+        characterization: await matchingTarget(),
+      });
 
-    expect(result.tier).toBe('REJECTED');
-  }, 60_000);
+      expect(result).toMatchObject({ tier: 'REJECTED', failedCheck: 'tests' });
+      expect(result.testLog).toMatch(/expected 4 to be 999/);
+    }, 120_000);
+
+    it('#3 — an engineered characterization mismatch is REJECTED by the diff, with both outcomes', async () => {
+      const result = await runVerificationGate({
+        workspaceDir,
+        artifactType: 'service',
+        characterization: {
+          ...(await matchingTarget()),
+          migratedFunctionSource: await functionSource('03-characterization-mismatch/migrated.ts'),
+        },
+      });
+
+      expect(result).toMatchObject({
+        tier: 'REJECTED',
+        failedCheck: 'characterization',
+        characterization: {
+          mismatch: { input: [100, 0.2], original: { type: 'return', value: 120 }, migrated: { type: 'return', value: 100.2 } },
+        },
+      });
+    }, 120_000);
+
+    it('#4 — an Angular-only error bare tsc accepts is REJECTED by the compile check, naming NG2003', async () => {
+      await plant('04-angular-only-error/untyped-di.pipe.ts');
+
+      // The premise of this control, checked rather than assumed: plain tsc is happy with the file.
+      const tsc = await runCommand('npx', ['--no-install', 'tsc', '-p', 'tsconfig.app.json', '--noEmit'], { cwd: workspaceDir });
+      expect(tsc.exitCode).toBe(0);
+
+      const result = await runVerificationGate({ workspaceDir, artifactType: 'filter', characterization: await matchingTarget() });
+
+      expect(result).toMatchObject({ tier: 'REJECTED', failedCheck: 'compile' });
+      expect(result.compileLog).toMatch(/NG2003/);
+    }, 120_000);
+  });
+
+  describe('false-accept regressions (ADR-057) — LOW, never MEDIUM', () => {
+    it.each([
+      [
+        'a filter factory returning a closure (blur-admin appImage.js), migrated to return something else',
+        'function appImage(layoutPaths) { return function (input) { return layoutPaths.images.root + input; }; }',
+        'function appImage(layoutPaths) { return function (input) { return "WRONG" + input; }; }',
+        ['object'] as const,
+      ],
+      [
+        'both sides calling a helper neither can reach',
+        'function f(x) { return x * 2; }',
+        'function f(x) { return helper(x) * 999; }',
+        ['number'] as const,
+      ],
+    ])('%s', async (_label, originalFunctionSource, migratedFunctionSource, parameterTypes) => {
+      const result = await runVerificationGate({
+        workspaceDir,
+        artifactType: 'filter',
+        characterization: {
+          artifactType: 'filter',
+          originalFunctionSource,
+          migratedFunctionSource,
+          parameterNames: ['p'],
+          parameterTypes,
+          callSiteArgLiterals: [],
+        },
+      });
+      expect(result.tier).toBe('LOW');
+    }, 120_000);
+  });
 });

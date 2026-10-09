@@ -52,7 +52,7 @@ describe('checkEligibility', () => {
   });
 
   it('rejects a function with no return statement — nothing to diff against a golden master', () => {
-    const result = checkEligibility('function log(msg) { console.log(msg); }');
+    const result = checkEligibility('function touch(msg) { msg.length; }');
     expect(result.eligible).toBe(false);
     if (!result.eligible) expect(result.reason).toMatch(/return/);
   });
@@ -60,5 +60,34 @@ describe('checkEligibility', () => {
   it('rejects unparseable source rather than throwing', () => {
     const result = checkEligibility('function broken( {{{');
     expect(result.eligible).toBe(false);
+  });
+
+  // ADR-057: each of these was accepted by the five-name check and then "matched" in the sandbox.
+  it.each([
+    ['a closed-over helper', 'function f(x) { return helper(x) * 2; }', /helper/],
+    ['a closed-over DI parameter', 'function (input) { return layoutPaths.images.root + input; }', /layoutPaths/],
+    ['a free variable read through object shorthand', 'function f(x) { return { x, helper }; }', /helper/],
+    ['localStorage', 'function f(x) { return localStorage.getItem(x); }', /localStorage/],
+    ['fetch', 'function f(x) { return fetch(x); }', /fetch/],
+    ['the angular global', 'function f(x) { return angular.copy(x); }', /angular/],
+    ['this', 'function f(x) { return this.rate * x; }', /this/],
+    ['Math.random', 'function f(x) { return Math.random() * x; }', /Math\.random/],
+    ['Date.now', 'function f(x) { return Date.now() + x; }', /Date\.now/],
+    ['an argument-less Date', 'function f(x) { return new Date().getTime() + x; }', /Date/],
+    ['an async function', 'async function f(x) { return x; }', /async/],
+  ])('rejects a function that depends on %s', (_label, source, reason) => {
+    const result = checkEligibility(source);
+    expect(result.eligible).toBe(false);
+    if (!result.eligible) expect(result.reason).toMatch(reason);
+  });
+
+  it('accepts locals, nested functions, destructuring, property names, and pure built-ins', () => {
+    const source = `function f(items, { rate }) {
+      const scale = (n) => Math.round(n * rate);
+      let total = 0;
+      for (const item of items) total += scale(item.price);
+      return { total, when: new Date(0), label: String(total).length };
+    }`;
+    expect(checkEligibility(source)).toEqual({ eligible: true });
   });
 });

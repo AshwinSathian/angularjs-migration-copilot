@@ -1,57 +1,72 @@
 import vm from 'node:vm';
+import { ts } from 'ts-morph';
 import type { SandboxOutcome } from '../types.js';
 
 const DEFAULT_TIMEOUT_MS = 1000;
 
+/** Errors that mean "this source cannot run standalone here", not "the function threw". */
+const ENVIRONMENT_ERROR_NAMES = new Set(['ReferenceError', 'SyntaxError']);
+
+function field(error: unknown, key: string): string | undefined {
+  if (typeof error === 'object' && error !== null && key in error) {
+    return String((error as Record<string, unknown>)[key]);
+  }
+  return undefined;
+}
+
 /**
- * Runs a standalone, self-contained function/arrow source string against
- * one input tuple inside a fresh `node:vm` context — deliberately not a
- * real Angular runtime or a real Node module system. Characterization
- * eligibility (eligibility.ts) already guarantees the function neither
- * touches `$scope`/DOM globals nor calls an async Angular service, so it
- * needs nothing from either runtime to execute correctly; running it
- * this way instead of bootstrapping Angular's DI is what makes clause 3
- * fast and dependency-free rather than a second, slower compile-and-run
- * cycle on top of clause 1's already-real `tsc` check.
+ * Runs a standalone function/arrow source string against one input
+ * tuple inside a fresh `node:vm` context — not an Angular runtime, not a
+ * Node module system. Never throws.
  *
- * A timeout (default 1s, generous for a pure function operating on
- * boundary-sized inputs) guards against an accidental infinite loop in
- * extracted source; a timed-out or throwing call is reported as a
- * `throw` outcome, never propagated as a real exception out of this
- * function — the caller (run-characterization.ts) treats every outcome,
- * including a timeout, as one more thing to diff against the other
- * side, not a reason to abort the whole verification run.
+ * Source may be TypeScript: it is transpiled (types stripped, nothing
+ * type-checked) first, so a migrated method body can be compared without
+ * the caller pre-processing it (docs/decisions.md ADR-054).
  *
- * Note on error handling (ADR-052): An Error thrown inside a vm context
- * is not `instanceof` the outer realm's Error constructor (cross-realm
- * identity). The catch block uses `'message' in error` instead of
- * `instanceof Error` to reliably extract the message, which works because
- * vm-thrown errors (including timeout errors) always carry a real
- * `.message` property regardless of realm.
+ * Three outcomes, kept apart on purpose (ADR-057):
+ * - `return` — the function ran and produced a value.
+ * - `throw` — the function ran and threw; this is behaviour, and
+ *   comparable (e.g. both sides `TypeError` on a `null` input).
+ * - `unrunnable` — syntax error, unresolved free variable, or timeout.
+ *   That is a property of the extraction, not of the function, and two
+ *   sides failing identically must never count as agreement.
+ *
+ * Errors thrown inside the context belong to another realm, so
+ * `instanceof Error` is false for them (ADR-052); `name`/`message` are
+ * read as plain properties instead.
+ *
+ * Each call serializes `args` into the script, so a function that
+ * mutates its input cannot leak that mutation into the other side's
+ * run. The cost: `undefined` inside `args` arrives as `null`.
  */
 export function runInSandbox(
   functionSource: string,
   args: readonly unknown[],
   options: { readonly timeoutMs?: number } = {}
 ): SandboxOutcome {
-  const context = vm.createContext({});
-  const script = new vm.Script(
-    `(function () {
-      const __fn = (${functionSource});
-      const __args = ${JSON.stringify(args)};
-      return __fn(...__args);
-    })()`
-  );
   try {
-    const value = script.runInContext(context, { timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS }) as unknown;
+    const js = ts.transpileModule(`const __fn = (${functionSource});`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+      reportDiagnostics: true,
+    });
+    const syntaxError = js.diagnostics?.[0];
+    if (syntaxError) {
+      return { type: 'unrunnable', message: ts.flattenDiagnosticMessageText(syntaxError.messageText, ' ') };
+    }
+    const script = new vm.Script(`(function () {
+      ${js.outputText}
+      return __fn(...${JSON.stringify(args)});
+    })()`);
+    const value = script.runInContext(vm.createContext({}), {
+      timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    }) as unknown;
     return { type: 'return', value };
   } catch (error) {
-    let message: string;
-    if (typeof error === 'object' && error !== null && 'message' in error) {
-      message = String((error as Record<string, unknown>).message);
-    } else {
-      message = String(error);
+    const name = field(error, 'name') ?? 'non-Error';
+    const message = field(error, 'message') ?? String(error);
+    if (ENVIRONMENT_ERROR_NAMES.has(name) || field(error, 'code') === 'ERR_SCRIPT_EXECUTION_TIMEOUT') {
+      return { type: 'unrunnable', message: `${name}: ${message}` };
     }
-    return { type: 'throw', message };
+    return { type: 'throw', name, message };
   }
 }

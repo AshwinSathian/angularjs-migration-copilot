@@ -72,4 +72,70 @@ describe('runCharacterization', () => {
     expect(result.eligible).toBe(false);
     if (!result.eligible) expect(result.reason).toMatch(/distinct/);
   });
+
+  // ADR-057: every case below came back `matched: true` before the fix pass.
+  it('is ineligible, not matched, when both sides fail on the same unresolved free variable', () => {
+    const result = runCharacterization({
+      ...baseTarget,
+      migratedFunctionSource: 'function double(x) { return helper(x) * 999; }',
+    });
+    expect(result.eligible).toBe(false);
+    if (!result.eligible) expect(result.reason).toMatch(/migrated function could not run standalone/);
+  });
+
+  it('is ineligible when the function returns a function — the filter-factory shape', () => {
+    const result = runCharacterization({
+      ...baseTarget,
+      originalFunctionSource: 'function f(x) { return function () { return x; }; }',
+      migratedFunctionSource: 'function f(x) { return function () { return x + 1; }; }',
+    });
+    expect(result.eligible).toBe(false);
+    if (!result.eligible) expect(result.reason).toMatch(/returned a function/);
+  });
+
+  it('reports a mismatch between two different Dates', () => {
+    const result = runCharacterization({
+      ...baseTarget,
+      originalFunctionSource: 'function f(n) { return new Date(n); }',
+      migratedFunctionSource: 'function f(n) { return new Date(n + 86400000); }',
+    });
+    expect(result).toMatchObject({ eligible: true, matched: false });
+  });
+
+  it('is ineligible when the original threw on every input — nothing was actually compared', () => {
+    const result = runCharacterization({
+      ...baseTarget,
+      originalFunctionSource: 'function f(x) { return x.a.b; }',
+      migratedFunctionSource: 'function f(x) { return x.a.b; }',
+    });
+    expect(result.eligible).toBe(false);
+    if (!result.eligible) expect(result.reason).toMatch(/threw on every/);
+  });
+
+  it('still matches when both sides throw the same real error on a boundary input but return elsewhere', () => {
+    const result = runCharacterization({
+      ...baseTarget,
+      parameterTypes: ['array'],
+      callSiteArgLiterals: [[[1, 2]], [[3]]],
+      originalFunctionSource: 'function f(a) { return a.length; }',
+      migratedFunctionSource: 'function f(a: number[]): number { return a.length; }',
+    });
+    expect(result).toMatchObject({ eligible: true, matched: true });
+  });
+
+  it('reports a mismatch when one side throws and the other returns', () => {
+    const result = runCharacterization({
+      ...baseTarget,
+      parameterTypes: ['array'],
+      callSiteArgLiterals: [[[1, 2]], [[3]]],
+      originalFunctionSource: 'function f(a) { return a.length; }',
+      migratedFunctionSource: 'function f(a) { return a ? a.length : 0; }',
+    });
+    expect(result).toMatchObject({ eligible: true, matched: false });
+  });
+
+  it('is ineligible when the migrated source does not parse', () => {
+    const result = runCharacterization({ ...baseTarget, migratedFunctionSource: 'function double(x) { return x * ; }' });
+    expect(result.eligible).toBe(false);
+  });
 });

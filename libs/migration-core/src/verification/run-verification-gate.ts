@@ -1,72 +1,78 @@
 import { runCompileCheck } from './check-compiles.js';
 import { runExistingTestSuite } from './run-existing-tests.js';
 import { runCharacterization } from './characterization/run-characterization.js';
-import type { VerificationInput, VerificationResult } from './types.js';
+import type { VerificationEvidence, VerificationInput, VerificationResult } from './types.js';
 
 /**
- * Stage 4 (docs/product-spec.md §6.5): clears in order — (1) compile,
- * (2) the migrated spec if one was supplied, (3) characterization
- * testing otherwise. A hard fail at (1) or (2) is an immediate REJECTED;
- * neither later clause runs once an earlier one has failed.
+ * The tiering policy, and the only place it lives (docs/product-spec.md
+ * §6.5, docs/decisions.md ADR-059/060). Pure: every caller — the
+ * single-patch gate below, or a pipeline that compiles once for many
+ * files — reaches a tier through this function.
  *
- * **Design decision made in this plan, not lifted verbatim from the
- * spec text — flagged for the user's line-by-line review**: when
- * neither a migrated spec nor a characterization target is available at
- * all (or the one given is ineligible), this resolves to REJECTED, not
- * a silent pass. Grounded in §6.5's own stated principle ("never accept
- * an AI-generated change without independent verification") — a patch
- * with zero verification evidence available can't be accepted by that
- * principle's own logic, but this is this plan's inference from that
- * principle, not something §6.5 states in those exact words.
+ * - compile failed, supplied spec failed, or characterization diff
+ *   mismatched → REJECTED, with which check failed.
+ * - compiled, characterization matched → MEDIUM.
+ * - compiled, nothing could verify behaviour → LOW. Never MEDIUM by
+ *   default, never REJECTED for lack of evidence.
  */
-export async function runVerificationGate(input: VerificationInput): Promise<VerificationResult> {
-  const compile = await runCompileCheck(input.workspaceDir, input.appTsConfigPath);
+export function decideTier(evidence: VerificationEvidence): VerificationResult {
+  const { artifactType, compile, tests, characterization } = evidence;
+  const compileLog = compile.log;
+
   if (!compile.passed) {
-    return { tier: 'REJECTED', artifactType: input.artifactType, reason: 'tsc --noEmit failed', compileLog: compile.log };
+    const reason =
+      compile.failure === 'diagnostics'
+        ? `Angular compiler reported ${compile.diagnostics.length} error(s)`
+        : 'Angular compiler could not run to completion';
+    return { tier: 'REJECTED', artifactType, failedCheck: 'compile', reason, compileLog };
   }
 
-  if (input.migratedSpecPath) {
-    const testResult = await runExistingTestSuite(input.workspaceDir, input.migratedSpecPath);
-    if (!testResult.passed) {
-      return {
-        tier: 'REJECTED',
-        artifactType: input.artifactType,
-        reason: 'existing migrated test suite failed',
-        compileLog: compile.log,
-        testLog: testResult.log,
-      };
-    }
-    return { tier: 'HIGH', artifactType: input.artifactType, compileLog: compile.log, testLog: testResult.log };
+  const testLog = tests?.log;
+  if (tests && !tests.passed) {
+    return { tier: 'REJECTED', artifactType, failedCheck: 'tests', reason: 'supplied spec failed', compileLog, testLog };
   }
 
-  if (!input.characterization) {
-    return {
-      tier: 'REJECTED',
-      artifactType: input.artifactType,
-      reason: 'no migrated spec and no characterization target — nothing to verify against',
-      compileLog: compile.log,
-    };
+  if (!characterization) {
+    return { tier: 'LOW', artifactType, reason: 'no characterization target', compileLog, testLog };
   }
-
-  const characterization = runCharacterization(input.characterization);
   if (!characterization.eligible) {
     return {
-      tier: 'REJECTED',
-      artifactType: input.artifactType,
+      tier: 'LOW',
+      artifactType,
       reason: `characterization ineligible: ${characterization.reason}`,
-      compileLog: compile.log,
-      characterization,
+      compileLog,
+      testLog,
     };
   }
   if (!characterization.matched) {
     return {
       tier: 'REJECTED',
-      artifactType: input.artifactType,
+      artifactType,
+      failedCheck: 'characterization',
       reason: 'characterization diff mismatch',
-      compileLog: compile.log,
+      compileLog,
       characterization,
     };
   }
+  return { tier: 'MEDIUM', artifactType, compileLog, testLog, characterization };
+}
 
-  return { tier: 'MEDIUM', artifactType: input.artifactType, compileLog: compile.log, characterization };
+/**
+ * Stage 4 for one patch already applied to `workspaceDir`: gathers the
+ * evidence in order — compile, then the supplied spec if any, then
+ * characterization — stopping at the first hard failure, and hands it
+ * to `decideTier`.
+ */
+export async function runVerificationGate(input: VerificationInput): Promise<VerificationResult> {
+  const { artifactType } = input;
+  const compile = await runCompileCheck(input.workspaceDir, input.appTsConfigPath);
+  if (!compile.passed) return decideTier({ artifactType, compile });
+
+  const tests = input.migratedSpecPath
+    ? await runExistingTestSuite(input.workspaceDir, input.migratedSpecPath)
+    : undefined;
+  if (tests && !tests.passed) return decideTier({ artifactType, compile, tests });
+
+  const characterization = input.characterization ? runCharacterization(input.characterization) : undefined;
+  return decideTier({ artifactType, compile, tests, characterization });
 }
