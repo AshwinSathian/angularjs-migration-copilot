@@ -1,6 +1,6 @@
 # AngularJS → Angular Migration Copilot
 
-**Status: early build.** Stages 0 and 1 (ingest + inventory, M0) are implemented, tested, and have been run against a real pinned fixture repo. Stages 1.5 through 5 — the workspace scaffold, the codemods, the LLM fallback, and above all the verification gate — don't exist yet. If you're picturing a working migration tool, you're picturing where this is going, not where it is. Current status and what's next: [docs/PROGRESS.md](docs/PROGRESS.md). Per-milestone scope and definition of done: [docs/milestones](docs/milestones).
+**Status: mechanical pipeline works end to end; no LLM stage yet.** Stages 0 through 2 and Stage 4 are built and have been run against three real, pinned AngularJS repos: inventory, workspace scaffold, the 10 codemods, assembly into a real Angular workspace, and the verification gate. Stage 3 (LLM fallback) and the hosted demo don't exist yet. The numbers so far are low and reported as they are — on the messiest fixture, 6.6% of files produce something the Angular compiler accepts. Current status, the full tables, and what's next: [docs/PROGRESS.md](docs/PROGRESS.md). Per-milestone scope and definition of done: [docs/milestones](docs/milestones).
 
 ## What this is
 
@@ -23,7 +23,7 @@ your AngularJS repo
   Stage 1.5 Workspace scaffold          — a real Angular workspace, generated fresh, never in-place
   Stage 2  Deterministic codemods       — the 10 patterns fixed in this project's scope
   Stage 3  LLM-assisted fallback        — everything the codemods can't safely touch
-  Stage 4  Verification gate           — tsc, existing tests, or a generated characterization test
+  Stage 4  Verification gate           — Angular compiler, then a generated characterization test
   Stage 5  Report + PR                  — side-by-side diffs, confidence tiers, honest numbers
         │
         ▼
@@ -34,30 +34,32 @@ Full detail on each stage, including exactly which 10 patterns are in scope and 
 
 ## Running it
 
-The full `migrate` command doesn't exist yet — that needs the codemods (M1), the verification gate (M2), and the LLM fallback (M3), none of which are built. What does exist today is Stage 0 + 1 on their own:
+The mechanical pipeline runs today, without an LLM or an API key:
 
 ```bash
 git clone https://github.com/AshwinSathian/angularjs-migration-copilot.git
 cd angularjs-migration-copilot && npm install
-npx nx run migration-core:build
-node libs/migration-core/dist/cli.js inventory ./path/to/an/angularjs/repo
+npx tsc -b libs/migration-core/tsconfig.lib.json
+CLI=libs/migration-core/dist/cli.js
+
+node $CLI inventory ./path/to/an/angularjs/repo        # Stage 0+1: report only
+node $CLI scaffold /abs/path/to/new-workspace          # Stage 1.5: a real Angular workspace
+node $CLI migrate ./path/to/an/angularjs/repo /abs/path/to/new-workspace --report report.json
 ```
 
-which detects the AngularJS version, build tooling, and test runner, runs the Stage 0 secrets scan, and prints a JSON dependency graph of every controller, directive, component, service, factory, provider, value, constant, filter, decorator, animation, route, and `$watch` usage it finds — while excluding any vendored AngularJS framework source it comes across, so the framework's own internals never get reported as if they were your app. No transforms happen yet — it's report-only, by design (see [docs/milestones/m0-inventory.md](docs/milestones/m0-inventory.md)).
+`migrate` never writes to the source repo. It applies every codemod, emits standalone Angular files into `src/app/migrated/` in the workspace, compiles them with the Angular compiler, and tiers each one:
 
-Once M1 lands, the eventual local CLI usage will look like:
+- **MEDIUM** — compiles, and a generated characterization test shows the migrated function behaves like the original.
+- **LOW** — compiles, behaviour not verified. Needs a human.
+- **REJECTED** — failed to compile or failed the characterization diff, with the compiler's own diagnostics in the report.
 
-```bash
-npx angularjs-migration-copilot migrate ./path/to/your/repo --provider groq
-```
-
-against your own AngularJS repo, with your own free-tier API key, producing a local branch and a report. No code leaves your machine unless you explicitly opt into the hosted mode.
+It runs the workspace's compiler on your machine with no sandbox, so only point it at code you trust. Anything the codemods can't handle is left for Stage 3, which isn't built.
 
 ## Design principles this project holds itself to
 
-- **Every AI-generated change is verified, not trusted.** Stage 4 either passes a real test suite, passes a generated characterization test against the original behavior, or the change is rejected. There's no tier below that.
-- **Honest numbers over flattering numbers.** Mechanical hit-rate on messy real code is expected to be as low as 15%. That's reported, not smoothed over by cherry-picking clean fixtures.
-- **The verification gate is the one piece of this project that gets held to a different standard.** It's the component an AI-assisted migration tool's whole credibility rests on, so it's human-reviewed line by line rather than taken on faith just because the tests passed. See [CLAUDE.md](CLAUDE.md) and [docs/product-spec.md §6.5](docs/product-spec.md).
+- **Every change is verified, not trusted — mechanical ones included.** Stage 4 compiles it with the Angular compiler and, where a function can be isolated, diffs its behaviour against the original. What can't be verified is labelled LOW, never quietly accepted.
+- **Honest numbers over flattering numbers.** "A pattern matched" and "the output compiles" are reported as two different numbers, per repo, including the worst one.
+- **The verification gate is held to a different standard.** It's the component the whole project's credibility rests on. Its controls are real (a scaffolded workspace, the real compiler) and are themselves tested by mutation: break the gate on purpose and the controls must fail. It was last reviewed adversarially by an AI agent at the maintainer's direction, not yet read line by line by a human — see [docs/decisions.md](docs/decisions.md) ADR-068 for exactly what that review did and didn't cover.
 - **$0 to run, regardless of demo traffic.** The hosted demo replays pre-computed results against a fixed set of fixture repos; it never triggers a live LLM call from visitor traffic.
 
 ## Repo layout

@@ -11,8 +11,8 @@ Update this file at the end of every session — rewrite the status table and "W
 | M0 — Inventory scanner | done | [#1](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/1) |
 | M0.5 — Target workspace scaffold | done | [#3](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/3) |
 | M1 — Deterministic codemods | done (10/10 patterns) | [#5](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/5), [#6](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/6), [#8](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/8), [#10](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/10), [#11](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/11), [#12](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/12), [#13](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/13), [#15](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/15), [#16](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/16), [#17](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/17), [#18](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/18), [#19](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/19), [#21](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/21) |
-| M2 — Verification gate | built, fix pass done, CI green — **awaiting human line-by-line review** | [#23](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/23) (draft) |
-| M2.5 — Pipeline assembler | built and run on all three fixtures — awaiting review (stacked on #23) | see below |
+| M2 — Verification gate | done — merged on an agent review; **human line-by-line read still owed** (ADR-068) | [#23](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/23) |
+| M2.5 — Pipeline assembler | done — run on all three fixtures | [#24](https://github.com/AshwinSathian/angularjs-migration-copilot/pull/24) |
 | M3 — LLM fallback + scheduler | not started | — |
 | M4 — Web layer | not started | — |
 | M5 — Fixtures, licensing, published report | not started | — |
@@ -58,15 +58,15 @@ Why things are rejected, most common first: a free AngularJS-era global (`angula
 - In `blur-admin`, 149 of 213 files match no pattern at all (103 scripts, 46 templates), and 27 of the 62 "matched" files are templates pattern #7 transformed that nothing compiled — a template is only compiled when a migrated component owns it, and only 2 do (both rejected). The same holds for the one transformed template in each of the other two fixtures.
 - `collect-call-site-args.ts` matches callees by name and nothing calls it (ADR-050). Filters are called from templates, which carry no literal arguments.
 - `nx build migration-core` can exit 0 having written nothing (ADR-055; seen again 2026-10-09). `npx tsc -b libs/migration-core/tsconfig.lib.json` is the build that can be trusted.
-- No sandbox: the compiler and test runner run on the host. Only run `migrate` against code you trust.
+- Branch protection requires only the gitleaks check; `Lint, typecheck, unit tests` is not a required check yet, so a red PR is still mergeable.
+- No sandbox: the compiler and test runner run on the host, and `node:vm` (characterization) is not a security boundary. Only run `migrate` against code you trust.
 - `ng-morph` is named in the spec as an AST engine and has never been needed or installed.
 - The two previously-unseen repos the v1 definition of done requires have not been chosen.
-- Dependabot PR #22 (`ip-address` 10.7.0 → 10.7.3, lockfile only) is open and mergeable.
 - Versions re-checked 2026-10-09, deliberately not bumped (ADR-066). Revisit Node 26 after it becomes Active LTS on 2026-10-28.
 
 ## What's next — prompt for the next session
 
-1. **Human review of PR #23** (`verification/`, every line) — CLAUDE.md rule, nothing merges before it. The M2.5 PR is stacked on it and also touches `verification/` (a `route` artifact type, parameter-type inference, one richer string boundary value); same rule.
+1. **Read `libs/migration-core/src/verification/` yourself, every line** (about 600 lines without specs). It merged without that (ADR-068). Start with `run-verification-gate.ts` (`decideTier`), then `characterization/diff.ts` and `eligibility.ts`.
 2. **Raise the mechanical compiled rate before spending LLM calls.** The rejection list above is mostly mechanical: type untyped callback parameters `any`; give migrated classes typed DI tokens instead of `any`; emit a stub or skip for route components that were not migrated. Each is a change to an existing pattern's output, not an 11th pattern. Re-run `migrate` on all three fixtures after each and update the tables.
 3. **Characterization producers beyond filters** — a `.factory`/`.service` returning an object of pure functions is the next cheapest; controllers will stay LOW by design.
 4. **M3** (`docs/milestones/m3-llm-fallback.md`) once 2 stops moving the numbers. Check provider limits first (ADR-008). Its input is the REJECTED and NO_MATCH files in the `migrate` report; its output goes back through `decideTier`.
@@ -82,4 +82,4 @@ One line per session, newest last. Detail belongs in `docs/decisions.md`.
 - **2026-09-16** — M1 patterns #3 follow-ups, #4, #9, #5 (ADR-034–043).
 - **2026-09-21** — M1 patterns #8, #10, #6, #7 (ADR-044–048).
 - **2026-09-22** — Pattern #7 merged; M2 first implementation on `worktree-m2-verification-gate`, not pushed (ADR-049–056).
-- **2026-10-09** — Adversarial review by execution: stages did not connect, gate false-accepted, controls were vacuous (ADR-057). Plan re-locked (ADR-058–061). M2 fix pass, CI checks job and real module boundaries, draft PR #23 green (ADR-062). M2.5 assembler built and run on all three fixtures; first compiled-in-workspace numbers (ADR-063–065). This file cut from 124 KB to its current size.
+- **2026-10-09** — Adversarial review by execution: stages did not connect, gate false-accepted, controls were vacuous (ADR-057). Plan re-locked (ADR-058–061). M2 fix pass, CI checks job and real module boundaries, draft PR #23 green (ADR-062). M2.5 assembler built and run on all three fixtures; first compiled-in-workspace numbers (ADR-063–065). Pre-merge adversarial review with mutation testing hardened the gate and CI (ADR-067); #22, #23, #24 merged, the last two under a recorded waiver of the human-read rule (ADR-068). This file cut from 124 KB to its current size.

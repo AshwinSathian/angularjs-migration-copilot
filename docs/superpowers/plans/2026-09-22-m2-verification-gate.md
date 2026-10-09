@@ -1,5 +1,7 @@
 # M2 — Verification Gate Implementation Plan
 
+> **Superseded 2026-10-09.** Kept as a record of how the first implementation was built. The code samples below use bare `tsc`, a HIGH tier, tier-only negative controls and a five-name eligibility check — all replaced after review (docs/decisions.md ADR-057, ADR-059–062, ADR-067). Do not implement from this file.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the Stage-4 verification gate (`docs/product-spec.md §6.5`) — the pipeline component that decides whether a migrated patch is `HIGH`, `MEDIUM`, or `REJECTED` by actually compiling it, running its existing tests if any, or generating and diffing a characterization test if not.
