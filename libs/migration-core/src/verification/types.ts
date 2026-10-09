@@ -7,7 +7,8 @@
  * result missing `failedCheck`, or a LOW result carrying a passing
  * characterization, isn't representable.
  */
-export type ArtifactType = 'controller' | 'service' | 'filter' | 'directive';
+export const ARTIFACT_TYPES = ['controller', 'service', 'filter', 'directive', 'route'] as const;
+export type ArtifactType = (typeof ARTIFACT_TYPES)[number];
 
 export interface CompileDiagnostic {
   /** Path as the compiler printed it — relative to the workspace root. */

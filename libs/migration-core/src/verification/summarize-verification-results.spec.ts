@@ -20,6 +20,6 @@ describe('summarizeByArtifactType', () => {
 
   it('every artifact type is present even with zero results — no silently-omitted category', () => {
     const summary = summarizeByArtifactType([]);
-    expect(Object.keys(summary).sort()).toEqual(['controller', 'directive', 'filter', 'service']);
+    expect(Object.keys(summary).sort()).toEqual(['controller', 'directive', 'filter', 'route', 'service']);
   });
 });

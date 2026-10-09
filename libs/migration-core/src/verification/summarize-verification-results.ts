@@ -1,13 +1,11 @@
-import type { ArtifactType, VerificationResult } from './types.js';
+import { ARTIFACT_TYPES, type ArtifactType, type VerificationResult } from './types.js';
 
-interface TierCounts {
+export interface TierCounts {
   readonly total: number;
   readonly medium: number;
   readonly low: number;
   readonly rejected: number;
 }
-
-const ARTIFACT_TYPES: readonly ArtifactType[] = ['controller', 'service', 'filter', 'directive'];
 
 /**
  * CLAUDE.md's reporting-honesty rule, made concrete: every artifact type
