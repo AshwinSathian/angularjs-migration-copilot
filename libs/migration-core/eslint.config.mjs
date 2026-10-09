@@ -1,7 +1,8 @@
-import baseConfig from '../../eslint.config.mjs';
+import baseConfig, { frameworkFreeLib } from '../../eslint.config.mjs';
 
 export default [
   ...baseConfig,
+  frameworkFreeLib,
   {
     files: ['**/*.json'],
     rules: {
@@ -20,6 +21,7 @@ export default [
     },
   },
   {
-    ignores: ['**/out-tsc'],
+    // Planted, deliberately-broken gate controls — not project source.
+    ignores: ['**/out-tsc', 'verification/__fixtures__/**/0*/**'],
   },
 ];

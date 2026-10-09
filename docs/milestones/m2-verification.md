@@ -1,6 +1,6 @@
 # M2 — Verification Gate
 
-**Status:** not started
+**Status:** code-complete on `worktree-m2-verification-gate`, reopened 2026-10-09 — see "Reopened" below
 **Estimate:** 1.5–2.5 weeks
 **Depends on:** M0.5 (doesn't strictly need M1, but in practice needs something to verify)
 
@@ -26,3 +26,14 @@ From day one of this milestone, `libs/migration-core/verification/__fixtures__/n
 ## Definition of done
 
 The gate correctly returns REJECTED on all three negative-control fixtures. This isn't a one-time check — the fixture directory runs in CI on every subsequent change to the verification module, permanently, per [decisions.md](../decisions.md) and [CLAUDE.md](../../CLAUDE.md).
+
+## Reopened (2026-10-09, ADR-057, ADR-059–061)
+
+The original definition of done was too weak: a gate that always returns REJECTED satisfies it. Done now also requires all of the following, each run for real:
+
+- Clause 1 uses the Angular compiler (`ngc -p tsconfig.app.json --noEmit` or `ng build`), not bare `tsc`, which ignores decorators, DI tokens, and templates.
+- Each negative control asserts the rejection *reason* and the relevant log line, not just the tier.
+- Unmocked positive controls: a known-good file reaches MEDIUM; a compiled-but-ineligible file reaches LOW.
+- Characterization rejects, rather than matches, when either side throws an environment error (`ReferenceError`, `SyntaxError`, timeout); compares function-valued, `Date`, `Map`/`Set`, `NaN`, and `undefined` results faithfully; and treats any free variable that is not a parameter as ineligible.
+- Tiers are MEDIUM / LOW / REJECTED. HIGH is not reported in v1.
+- The human line-by-line review of `verification/` happens after this fix pass, before the PR.

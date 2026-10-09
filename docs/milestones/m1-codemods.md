@@ -1,6 +1,6 @@
 # M1 — Deterministic Codemods
 
-**Status:** not started
+**Status:** done — all 10 patterns merged (see `docs/PROGRESS.md`). Output is not yet assembled into workspace files; that is M2.5.
 **Estimate:** 2–3 weeks
 **Depends on:** M0.5
 

@@ -1,5 +1,8 @@
 name: CI
 
+# Third-party actions are pinned to a commit, not a tag: a moved tag would run
+# new code with this repo's token.
+
 on:
   push:
     branches: [main]
@@ -13,16 +16,100 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # The rest of this pipeline (lint-and-typecheck, unit-tests,
-  # verification-negative-controls, dependency-boundary-check,
-  # fixture-integration) gets added incrementally as each milestone lands
-  # the tooling it depends on. See docs/architecture.md §5 and
-  # docs/decisions.md ADR-009 for why this file doesn't pretend those jobs
-  # exist yet.
+  # Path-filter used by verification-negative-controls below. Runs
+  # unconditionally (cheap: checkout + a local diff, no test execution) so
+  # its output is always available regardless of event type — avoids any
+  # ambiguity around GitHub Actions' skip/success() semantics for a
+  # dependent job's own `if:` condition. See docs/decisions.md ADR-056 for
+  # why this replaced the milestone plan's own first-draft pseudocode,
+  # which referenced a `github.event.pull_request.changed_files` field
+  # that doesn't exist as a usable `if:` expression.
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      verification: ${{ steps.filter.outputs.verification }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3
+        id: filter
+        with:
+          filters: |
+            verification:
+              - 'libs/migration-core/src/verification/**'
+              - 'libs/migration-core/verification/**'
+              # Everything the gate's behaviour depends on, not just its own
+              # directory: the subprocess runner and scaffolder it calls, the
+              # pinned toolchain, and this workflow.
+              - 'libs/migration-core/src/scaffold/**'
+              - 'libs/migration-core/vitest.integration.config.mts'
+              - 'package.json'
+              - 'package-lock.json'
+              - '.github/workflows/ci.yml'
+
+  # Permanently enforces the three planted negative-control fixtures
+  # (libs/migration-core/verification/__fixtures__/negative-controls/) per
+  # CLAUDE.md's verification-gate rule and docs/milestones/m2-verification.md's
+  # definition of done. Runs unconditionally on a direct push to main, and
+  # on a pull_request only when it touches the verification module — see
+  # the `changes` job above.
+  verification-negative-controls:
+    name: Verification gate — negative controls
+    needs: changes
+    if: github.event_name == 'push' || needs.changes.outputs.verification == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - run: npm ci
+      # No `nx build` step: the integration spec imports directly from
+      # `src/` (via vitest's own esbuild transform), not from `dist/` — see
+      # ADR-056 and ADR-055 (nx build can silently report success while
+      # writing zero output; this job simply doesn't depend on it).
+      - run: npx vitest run --config libs/migration-core/vitest.integration.config.mts
+        timeout-minutes: 15
+
+  # Lint (including the module-boundary rule in eslint.config.mjs),
+  # typecheck, and the unit suite for every project. Fixture submodules are
+  # not checked out: no unit spec reads them.
+  checks:
+    name: Lint, typecheck, unit tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx nx run-many -t lint,typecheck,test
+      # Dependency-boundary check at the installed-tree level: the lint rule
+      # catches a stray import, this catches a framework package arriving
+      # transitively through migration-core's own production dependencies.
+      - name: migration-core production dependency tree is framework-free
+        run: |
+          tree="$(npm ls -w migration-core --omit=dev --all --parseable)"
+          if echo "$tree" | grep -E 'node_modules/(@angular|@nestjs|mongodb|mongoose)(/|$)'; then
+            echo "::error::framework dependency in migration-core's production tree"
+            exit 1
+          fi
+
+  # fixture-integration gets added once the pipeline it runs exists
+  # (M2.5). See docs/architecture.md §5 and docs/decisions.md ADR-009.
