@@ -273,6 +273,7 @@ describe('runPipeline', () => {
 
       expect(second.calls).toEqual(['app/main.js']);
       expect(resumed.llmAssisted).toMatchObject({ status: 'complete', patched: 2, compiled: 2, pending: 0 });
-    });
+      // Two full pipeline runs: over the 5s default on a CI runner.
+    }, 30_000);
   });
 });
