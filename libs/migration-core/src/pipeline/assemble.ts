@@ -34,6 +34,7 @@ const IMPORT_SOURCES: Readonly<Record<string, string>> = {
   Pipe: '@angular/core',
   Injectable: '@angular/core',
   Input: '@angular/core',
+  Inject: '@angular/core',
   HttpClient: '@angular/common/http',
   Routes: '@angular/router',
   Observable: 'rxjs',
@@ -47,6 +48,8 @@ export interface AssembledDeclaration {
   /** Workspace-relative, POSIX separators. */
   readonly emittedPath: string;
   readonly content: string;
+  /** What a human (or Stage 3) still has to do for this file to work at runtime, even if it compiles. */
+  readonly followUps: readonly string[];
   /** The `templateUrl` string as written in the source, when the declaration has one. The runner resolves and rewrites it. */
   readonly templateUrl?: string;
 }
@@ -94,8 +97,8 @@ function classify(output: SourceFile, declaration: Node, name: string): { artifa
   }
 }
 
-function importsFor(declaration: Node): string {
-  const used = new Set(declaration.getDescendantsOfKind(SyntaxKind.Identifier).map((id) => id.getText()));
+function importsFor(file: SourceFile): string {
+  const used = new Set(file.getDescendantsOfKind(SyntaxKind.Identifier).map((id) => id.getText()));
   const bySource = new Map<string, string[]>();
   for (const [symbol, source] of Object.entries(IMPORT_SOURCES)) {
     if (used.has(symbol)) bySource.set(source, [...(bySource.get(source) ?? []), symbol]);
@@ -144,6 +147,76 @@ function declareAssignedFields(declaration: ClassDeclaration): void {
   ]);
   const fields = [...names].filter((name) => !taken.has(name));
   if (fields.length > 0) declaration.insertProperties(0, fields.map((name) => ({ name, type: 'any' })));
+}
+
+/**
+ * File-scope helpers the declaration reads — `function random(min, max)`
+ * beside a controller, a `var` of shared constants — found by symbol
+ * resolution and followed transitively. Without them the class is lifted
+ * out of the only scope where those names exist. Only module-level
+ * functions and variables of the same source file qualify; anything
+ * declared in another file stays unresolved, for the gate to reject.
+ */
+function fileScopeDependencies(output: SourceFile, declaration: Node): Node[] {
+  const moduleScopes = new Set<Node>([output, ...output.getDescendantsOfKind(SyntaxKind.Block).filter((block) => {
+    const fn = block.getParent();
+    return Node.isFunctionExpression(fn) && Node.isParenthesizedExpression(fn.getParent()); // the IIFE module wrapper
+  })]);
+  const lifted = new Map<string, Node>();
+  const queue: Node[] = [declaration];
+  for (let node = queue.shift(); node; node = queue.shift()) {
+    for (const identifier of node.getDescendantsOfKind(SyntaxKind.Identifier)) {
+      const name = identifier.getText();
+      if (lifted.has(name)) continue;
+      for (const found of identifier.getSymbol()?.getDeclarations() ?? []) {
+        const statement = Node.isFunctionDeclaration(found)
+          ? found
+          : Node.isVariableDeclaration(found)
+            ? found.getVariableStatement()
+            : undefined;
+        if (!statement || statement === declaration || !moduleScopes.has(statement.getParentOrThrow())) continue;
+        if (statement.getFirstAncestor((a) => a === declaration)) continue;
+        lifted.set(name, statement);
+        queue.push(statement);
+        break; // a name declared twice at file scope (CoreUI's `random`) is lifted once
+      }
+    }
+  }
+  return [...new Set(lifted.values())].sort((a, b) => a.getPos() - b.getPos());
+}
+
+/**
+ * Typing the JavaScript that was lifted, so the workspace's strict
+ * settings judge its logic rather than its lack of annotations:
+ * - every untyped parameter of a plain function becomes `any` (arrow
+ *   functions are left alone — they are contextually typed, and one
+ *   written `x => …` has no parentheses to hold an annotation);
+ * - in a decorated class, a constructor parameter typed `any` gets
+ *   `@Inject('<name>')`. AngularJS injects by name, so the name is the
+ *   faithful token; Angular's compiler otherwise rejects the class
+ *   (`NG2003`). Nothing provides that token yet — which is why each one
+ *   is returned as a follow-up, and why the file can be at most LOW.
+ */
+function finalize(content: string): { content: string; followUps: string[] } {
+  const file = new Project({ useInMemoryFileSystem: true }).createSourceFile('/emitted.ts', content);
+  const followUps: string[] = [];
+  for (const classDeclaration of file.getClasses()) {
+    const decorated = classDeclaration.getDecorators().length > 0;
+    for (const parameter of classDeclaration.getConstructors()[0]?.getParameters() ?? []) {
+      if (parameter.getTypeNode()?.getText() !== 'any') continue;
+      followUps.push(`provide '${parameter.getName()}': an AngularJS injectable with no Angular provider yet`);
+      if (decorated && parameter.getDecorators().length === 0) {
+        parameter.addDecorator({ name: 'Inject', arguments: [`'${parameter.getName()}'`] });
+      }
+    }
+  }
+  for (const parameter of file.getDescendantsOfKind(SyntaxKind.Parameter)) {
+    const owner = parameter.getParent();
+    if (parameter.getTypeNode() || parameter.getInitializer() || Node.isArrowFunction(owner)) continue;
+    parameter.setType(parameter.isRestParameter() ? 'any[]' : 'any');
+  }
+  const body = file.getFullText();
+  return { content: body.replace(/\n\n/, `\n${importsFor(file)}\n`), followUps };
 }
 
 /** The declaration's text with `export` added in modifier position (after any decorators), via the AST rather than string surgery. */
@@ -228,13 +301,16 @@ export function assembleScript(sourcePath: string, sourceText: string): Assemble
       }
       taken.add(name);
       const { artifactType, suffix } = classify(output, declaration, name);
+      const helpers = fileScopeDependencies(output, declaration).map((helper) => helper.getText());
       const baseName = toKebabCase(name).replace(new RegExp(`-(${suffix}|ctrl|controller)$`), '') || toKebabCase(name);
       declarations.push({
         pattern,
         name,
         artifactType,
         emittedPath: posix.join('src/app/migrated', directory, `${baseName}.${suffix}.ts`),
-        content: `// Migrated from ${sourcePath} by pattern ${pattern}.\n${importsFor(declaration)}\n${exportedText(declaration)}\n`,
+        ...finalize(
+          [`// Migrated from ${sourcePath} by pattern ${pattern}.`, '', ...helpers, exportedText(declaration), ''].join('\n')
+        ),
         templateUrl: templateUrlOf(declaration),
       });
     }
